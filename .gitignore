@@ -1,0 +1,19 @@
+# env files — ignore everything except .example templates
+.env
+.env.*
+!.env.*.example
+
+# editor/OS junk
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# secrets accidentally produced by setup scripts
+*.pat
+*.key
+
+# python (for any future scripts)
+.venv/
+__pycache__/
+*.pyc

@@ -1,0 +1,120 @@
+# Production compose for the CDCF umbrella's shared auth stack.
+#
+# Brought up on the cdcf-website Plesk VPS via the Plesk Docker extension.
+# Plesk terminates TLS upstream on auth.catholicdigitalcommons.org and
+# authz.catholicdigitalcommons.org; container services bind to 127.0.0.1
+# only and are reverse-proxied by Plesk's nginx.
+#
+# Bring-up + bootstrap sequence is documented in ./README.md.
+#
+# Secrets live in .env.production on the VPS (gitignored, chrooted deploy
+# user only). NEVER commit values.
+
+name: cdcf-auth
+
+services:
+  # --- Zitadel (identity) ---------------------------------------------
+  zitadel-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zitadel
+      POSTGRES_PASSWORD: ${ZITADEL_DB_PASSWORD}
+      POSTGRES_DB: zitadel
+    volumes:
+      - /var/lib/cdcf-auth/zitadel-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U zitadel -d zitadel']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:v4.12.2
+    restart: unless-stopped
+    depends_on:
+      zitadel-db:
+        condition: service_healthy
+    command: start-from-init --masterkeyFromEnv
+    environment:
+      # Database
+      ZITADEL_DATABASE_POSTGRES_HOST: zitadel-db
+      ZITADEL_DATABASE_POSTGRES_PORT: '5432'
+      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${ZITADEL_DB_PASSWORD}
+      ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: zitadel
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${ZITADEL_DB_PASSWORD}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
+      # Masterkey is 32 chars, generated once, NEVER rotated.
+      ZITADEL_MASTERKEY: ${ZITADEL_MASTERKEY}
+      # External-facing config (TLS terminated upstream by Plesk's nginx)
+      ZITADEL_EXTERNALDOMAIN: auth.catholicdigitalcommons.org
+      ZITADEL_EXTERNALPORT: '443'
+      ZITADEL_EXTERNALSECURE: 'true'
+      ZITADEL_TLS_ENABLED: 'false'
+      # First-instance bootstrap: human IAM-OWNER + machine automation user with PAT.
+      # PAT is written to the bind-mounted /zitadel-data/ on first boot, then reused.
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: ${ZITADEL_ADMIN_USER}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${ZITADEL_ADMIN_PASSWORD}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: 'true'
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: automation
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: automation
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: '2099-12-31T23:59:59Z'
+    volumes:
+      # Bind mount must be world-writable since the Zitadel image is scratch-based
+      # and the runtime UID can't be predicted. The PAT file lands at
+      # /zitadel-data/automation-user.pat on first boot.
+      - /var/lib/cdcf-auth/zitadel-data:/zitadel-data
+    ports:
+      - '127.0.0.1:8080:8080'
+
+  # --- OpenFGA (relationship authz) -----------------------------------
+  openfga-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: openfga
+      POSTGRES_PASSWORD: ${OPENFGA_DB_PASSWORD}
+      POSTGRES_DB: openfga
+    volumes:
+      - /var/lib/cdcf-auth/openfga-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U openfga -d openfga']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  openfga-migrate:
+    image: openfga/openfga:v1.15.1
+    depends_on:
+      openfga-db:
+        condition: service_healthy
+    command: migrate
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://openfga:${OPENFGA_DB_PASSWORD}@openfga-db:5432/openfga?sslmode=disable
+    restart: 'no'
+
+  openfga:
+    image: openfga/openfga:v1.15.1
+    restart: unless-stopped
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://openfga:${OPENFGA_DB_PASSWORD}@openfga-db:5432/openfga?sslmode=disable
+      OPENFGA_AUTHN_METHOD: preshared
+      OPENFGA_AUTHN_PRESHARED_KEYS: ${OPENFGA_PRESHARED_KEY}
+      OPENFGA_HTTP_TLS_ENABLED: 'false'
+      OPENFGA_LOG_FORMAT: json
+      # Playground is a Zitadel-style web UI for poking the model. Disabled
+      # in prod — admin tooling lives in setup-openfga.sh and FGA CLI.
+      OPENFGA_PLAYGROUND_ENABLED: 'false'
+    ports:
+      - '127.0.0.1:8081:8080' # HTTP API
+      # Uncomment if a consumer needs gRPC:
+      # - '127.0.0.1:8082:8081'
