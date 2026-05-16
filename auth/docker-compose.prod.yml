@@ -61,6 +61,11 @@ services:
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: automation
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: automation
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: '2099-12-31T23:59:59Z'
+      # Write the PAT to a file inside the bind-mounted data dir instead of
+      # logging it to stdout. Without this, the PAT is emitted to container
+      # logs during the 03_default_instance migration — visible to anyone
+      # with `docker logs` access.
+      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel-data/automation-user.pat
     volumes:
       # Bind mount must be world-writable since the Zitadel image is scratch-based
       # and the runtime UID can't be predicted. The PAT file lands at

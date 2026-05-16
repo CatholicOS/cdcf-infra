@@ -49,13 +49,15 @@ Run these as the Postgres superuser (typically `postgres`) on the VPS, **substit
 
 ```sql
 CREATE ROLE zitadel WITH LOGIN PASSWORD 'CHANGEME-zitadel';
+ALTER ROLE zitadel CREATEDB;   -- Zitadel's start-from-init checks for the DB
+                               -- via a CREATE-style probe even when it exists.
 CREATE DATABASE zitadel OWNER zitadel;
 
 CREATE ROLE openfga WITH LOGIN PASSWORD 'CHANGEME-openfga';
 CREATE DATABASE openfga OWNER openfga;
 ```
 
-Owner role gives the runtime user the `CREATE` privilege Zitadel + OpenFGA need for their own migrations. No separate admin role needed at our scale.
+Owner role gives the runtime user the privileges Zitadel + OpenFGA need for their own migrations. The `CREATEDB` grant on `zitadel` is required even though we pre-create the database — Zitadel's `start-from-init` command always runs a database-creation probe and fails on first boot otherwise.
 
 ### 3. Allow docker-bridge connections in `pg_hba.conf`
 
@@ -63,8 +65,13 @@ The compose uses `host.docker.internal` to resolve to the docker-bridge host-gat
 
 ```
 # Allow docker-bridge connections (cdcf-auth stack)
-host  zitadel  zitadel  172.16.0.0/12  scram-sha-256
-host  openfga  openfga  172.16.0.0/12  scram-sha-256
+host  zitadel   zitadel  172.16.0.0/12  scram-sha-256
+host  openfga   openfga  172.16.0.0/12  scram-sha-256
+# Zitadel's start-from-init first connects to the postgres system DB
+# to verify its target DB exists — it needs auth permission there too.
+# (The zitadel role has no privileges in the postgres DB by default;
+# this is a connect-only allow.)
+host  postgres  zitadel  172.16.0.0/12  scram-sha-256
 ```
 
 The `172.16.0.0/12` range covers all default Docker networks (172.16-31.x.x). Reload Postgres:
