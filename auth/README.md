@@ -129,10 +129,13 @@ curl -s http://127.0.0.1:8081/healthz       # OpenFGA → 200
 # 6. Two PAT files land in /opt/cdcf-auth/runtime/zitadel-data/ after first boot:
 #      automation-user.pat  - IAM_OWNER, used by setup-zitadel.sh and our own admin scripts
 #      login-client.pat     - IAM_LOGIN_CLIENT, consumed by the zitadel-login container
-#    Run the bootstrap scripts using the automation PAT:
-sudo /opt/cdcf-auth/auth/setup-zitadel.sh --target production --create-orgs
-sudo /opt/cdcf-auth/auth/setup-openfga.sh --target production --create-store liturgical_calendar
+#    Run the bootstrap scripts (--all does rename-bootstrap-admin + create-orgs + provision-litcal):
+cd /opt/cdcf-auth/auth
+./setup-zitadel.sh   --target production --all
+./setup-openfga.sh   --target production --create-litcal-store
 ```
+
+The Zitadel script prints handoff values for LiturgicalCalendar at the end (issuer, org ID, project ID, API client ID). The OpenFGA script prints store ID + model ID. Use those values to write `handoffs/liturgicalcalendar.md` per the template in `handoffs/README.md`.
 
 ## Plesk-side setup
 
@@ -162,11 +165,11 @@ Restoring Zitadel requires both the pg_dump AND the original `ZITADEL_MASTERKEY`
 ## Adding a new consumer property
 
 1. Decide whether the property gets its own Zitadel Org (per-property isolation, default) or fits under an existing Org.
-2. Pre-provision the Org via `setup-zitadel.sh --create-org <NAME>` if it doesn't exist.
-3. Create a Project under the Org for the property's apps.
-4. Create OIDC apps with the property's prod callback URLs.
-5. For OpenFGA-using properties:
-   - `CREATE DATABASE <slug>_authz OWNER <slug>` on the host Postgres (or reuse the shared `openfga` database with namespaced stores — current pattern uses one DB, multiple stores keyed by slug).
-   - Run `setup-openfga.sh --create-store <slug>` to create the store and seed an authorization model.
-6. Write a handoff doc under `handoffs/<property>.md` with the non-secret values (issuer URL, client ID, project ID, store ID, model ID) the property's repo needs to consume. Secrets (client secret, preshared key) deliver out-of-band.
-7. Open an issue in the property's repo with the handoff doc inline.
+2. Pre-provision the Org via `setup-zitadel.sh --target production --create-org <NAME>` if it doesn't exist.
+3. Add provisioning logic to `setup-zitadel.sh` (a new `do_provision_<property>` function mirroring `do_provision_litcal`) that creates the Project + roles + OIDC app(s) the property needs. Roles + OIDC app config should be lifted from the property's own dev compose / config to ensure exact parity.
+4. For OpenFGA-using properties:
+   - Drop the authorization model JSON into `auth/models/<StoreName>.json`.
+   - Run `./setup-openfga.sh --target production --create-store <StoreName>` to create the store and seed the model.
+   - All properties share the single `openfga` database on the host Postgres, keyed by store name — no extra DB needed.
+5. Write a handoff doc under `handoffs/<property>.md` with the non-secret values (issuer URL, client ID, project ID, store ID, model ID) the property's repo needs to consume. Secrets (client secret, preshared key) deliver out-of-band.
+6. Open an issue in the property's repo with the handoff doc inline.
