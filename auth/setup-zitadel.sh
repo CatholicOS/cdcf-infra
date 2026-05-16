@@ -68,9 +68,9 @@ set -a; source "$ENV_FILE"; set +a
 
 # Discover Zitadel issuer + PAT. In production the issuer is read from
 # config (or hardcoded to auth.catholicdigitalcommons.org); the PAT lives
-# on the local VPS filesystem in the bind-mounted data dir.
+# on the local VPS filesystem in the bind-mounted runtime data dir.
 ZITADEL_ISSUER="${ZITADEL_ISSUER:-https://auth.catholicdigitalcommons.org}"
-PAT_FILE="${PAT_FILE:-/var/lib/cdcf-auth/zitadel-data/automation-user.pat}"
+PAT_FILE="${PAT_FILE:-/opt/cdcf-auth/runtime/zitadel-data/automation-user.pat}"
 
 if [[ ! -r "$PAT_FILE" ]]; then
     echo "PAT file not readable: $PAT_FILE" >&2

@@ -27,5 +27,7 @@ The deployment runs on the existing cdcf-website Plesk VPS via the Plesk Docker 
 
 - Single Zitadel instance, one Org per property (`CDCF`, `LiturgicalCalendar`, `BibleGet`, `OntoKit`).
 - No `zitadel-login` v2 UI service — each property implements its own login UI by calling Zitadel APIs.
-- Shared OpenFGA with a separate `openfga-db` Postgres instance (decoupled backups).
+- Shared OpenFGA, with its own database on the host's native PostgreSQL.
+- **No containerized databases.** Both Zitadel and OpenFGA persist to the host Postgres (the same instance other VPS services already use). One Postgres to back up, patch, monitor.
+- Repo is cloned to `/opt/cdcf-auth/` on the VPS — see [`auth/README.md`](./auth/README.md#canonical-vps-layout) for the full path table.
 - Phase 1 wiring: LiturgicalCalendarAPI only (the only consumer already client-ready). Other Orgs are pre-provisioned stubs.
