@@ -84,8 +84,10 @@ services:
       # and the runtime UID can't be predicted. The PAT files (automation +
       # login-client) land here on first boot.
       - /opt/cdcf-auth/runtime/zitadel-data:/zitadel-data
-    ports:
-      - '127.0.0.1:8080:8080'
+    # No host port mapping — reachable only via the internal docker network.
+    # The zitadel-proxy service is the only public-facing entry point.
+    expose:
+      - '8080'
 
   # --- Zitadel Login V2 UI (Next.js) ---------------------------------
   # Serves /ui/v2/login/* — used by the admin console login flow.
@@ -110,8 +112,25 @@ services:
     volumes:
       # Read-only: the login service only consumes login-client.pat
       - /opt/cdcf-auth/runtime/zitadel-data:/zitadel-data:ro
+    # Internal-only — fronted by zitadel-proxy.
+    expose:
+      - '3000'
+
+  # --- Internal HTTP proxy in front of zitadel + zitadel-login --------
+  # Plesk's nginx terminates TLS on auth.catholicdigitalcommons.org and
+  # reverse-proxies the plain HTTP stream to this container. The container
+  # then routes /ui/v2/login* to the v2 UI and everything else to the
+  # Zitadel backend, all over the internal docker network.
+  zitadel-proxy:
+    image: nginx:alpine
+    restart: unless-stopped
+    depends_on:
+      - zitadel
+      - zitadel-login
+    volumes:
+      - ./nginx/zitadel.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
-      - '127.0.0.1:8082:3000'
+      - '127.0.0.1:8080:80'
 
   # --- OpenFGA (relationship authz) -----------------------------------
   openfga-migrate:

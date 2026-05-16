@@ -135,15 +135,14 @@ sudo /opt/cdcf-auth/auth/setup-openfga.sh --target production --create-store lit
 
 ## Plesk-side setup
 
-Two subdomains + three Plesk Docker Proxy Rules. DNS + Let's Encrypt set up in the standard Plesk UI; routing is handled by Tools & Settings → Docker → Proxy Rules (NOT by "Additional nginx directives", which gets shadowed by Plesk's default `location /` going to Apache).
+Two subdomains + two Plesk Docker Proxy Rules (one per subdomain). DNS + Let's Encrypt set up in the standard Plesk UI; routing is handled by Tools & Settings → Docker → Proxy Rules (NOT by "Additional nginx directives", which gets shadowed by Plesk's default `location /` going to Apache).
 
-| Subdomain | Path | Container | Container port | Purpose |
-| --- | --- | --- | --- | --- |
-| `auth.catholicdigitalcommons.org` | `/ui/v2/login` | `cdcf-auth-zitadel-login-1` | 3000 | Admin console login flow (v2 login UI) |
-| `auth.catholicdigitalcommons.org` | `/` (catch-all) | `cdcf-auth-zitadel-1` | 8080 | Zitadel backend (APIs, console, OIDC endpoints) |
-| `authz.catholicdigitalcommons.org` | `/` | `cdcf-auth-openfga-1` | 8080 | OpenFGA HTTP API |
+| Subdomain | Container | Container port | What's behind it |
+| --- | --- | --- | --- |
+| `auth.catholicdigitalcommons.org` | `cdcf-auth-zitadel-proxy-1` | 80 | Internal nginx that routes `/ui/v2/login*` → `zitadel-login:3000`, everything else → `zitadel:8080` |
+| `authz.catholicdigitalcommons.org` | `cdcf-auth-openfga-1` | 8080 | OpenFGA HTTP API directly |
 
-**Order matters in Plesk's UI** — the more specific path (`/ui/v2/login`) must be evaluated before the catch-all (`/`). Plesk handles this correctly if you add the more specific rule first.
+The `auth.*` rule points at the internal nginx proxy (`zitadel-proxy`) rather than directly at the Zitadel backend. The proxy handles the path-based split between the backend and the v2 login UI — Plesk's Docker Proxy Rules are per-subdomain, not per-path, so we keep path-level routing inside the compose stack where it's versioned with the rest of the config (`auth/nginx/zitadel.conf`).
 
 ## Backup
 
