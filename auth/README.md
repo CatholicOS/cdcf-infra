@@ -26,6 +26,7 @@ Plesk's Docker extension picks up `docker-compose.prod.yml` at the path above vi
 
 - Single Zitadel instance, **one Zitadel Org per property** (`CDCF`, `LiturgicalCalendar`, `BibleGet`, `OntoKit`). No automatic cross-property SSO — intentional.
 - **`zitadel-login` v2 UI service is deployed** but ONLY serves `/ui/v2/login/*` — that's the login flow the **admin console** (`/ui/console/`) redirects to. Per-property end-user login UIs are still built into each property's frontend (calling Zitadel APIs directly). The two concerns are independent: admin console login (this service) vs. end-user login (each property's own UI).
+- **Login names = email addresses** (instance-wide). `UserLoginMustBeDomain=false` + `UserEmailAsUsername=true` in the default domain policy — so users log in with their email, globally unique across the instance. No `<username>@<org>.<external-domain>` legacy suffix. Machine users (e.g. `automation`, `login-client`) still use machine names since they don't have emails.
 - **Shared OpenFGA**, with its own database on the host Postgres.
 - **Host Postgres only** — no containerized DBs. One Postgres instance to back up, patch, monitor.
 - Phase 1 consumer: LiturgicalCalendarAPI. Other Orgs are pre-provisioned stubs.

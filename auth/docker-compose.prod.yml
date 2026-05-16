@@ -53,11 +53,23 @@ services:
       ZITADEL_EXTERNALPORT: '443'
       ZITADEL_EXTERNALSECURE: 'true'
       ZITADEL_TLS_ENABLED: 'false'
+      # Default domain policy: use email as username, no org-domain suffix in
+      # login names. With both flags below, login names are the user's email
+      # address (globally unique across the instance). The legacy
+      # `<username>@<org-domain>.<external>` suffix pattern is disabled.
+      # DOMAINPOLICY changes are FIRSTBOOT-ONLY — wipe + rebootstrap to alter.
+      ZITADEL_DEFAULTINSTANCE_DOMAINPOLICY_USERLOGINMUSTBEDOMAIN: 'false'
+      ZITADEL_DEFAULTINSTANCE_DOMAINPOLICY_USEREMAILASUSERNAME: 'true'
       # First-instance bootstrap: human IAM-OWNER + machine automation user with PAT.
-      # PAT is written to the bind-mounted /zitadel-data/ on first boot, then reused.
+      # Human user has email + verified=true so login works without an SMTP
+      # round-trip (we have no SMTP configured at the umbrella level yet).
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: ${ZITADEL_ADMIN_USER}
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${ZITADEL_ADMIN_PASSWORD}
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: 'true'
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_EMAIL_ADDRESS: ${ZITADEL_ADMIN_EMAIL}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_EMAIL_VERIFIED: 'true'
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_FIRSTNAME: ${ZITADEL_ADMIN_FIRSTNAME:-IAM}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_LASTNAME: ${ZITADEL_ADMIN_LASTNAME:-Admin}
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: automation
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: automation
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: '2099-12-31T23:59:59Z'
