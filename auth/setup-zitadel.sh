@@ -267,6 +267,7 @@ find_project_id() {
     local body
     body=$(zapi POST /zitadel.project.v2.ProjectService/ListProjects \
         "{\"filters\":[{\"project_name_filter\":{\"projectName\":\"$name\",\"method\":\"TEXT_FILTER_METHOD_EQUALS\"}},{\"organization_id_filter\":{\"organizationId\":\"$org_id\"}}]}")
+    # Zitadel v2 ListProjects returns .projects[].id (was .projectId in earlier docs).
     echo "$body" | jq -r '.projects[0].id // .projects[0].projectId // empty'
 }
 
@@ -281,6 +282,7 @@ create_project() {
         local result
         result=$(zapi POST /zitadel.project.v2.ProjectService/CreateProject \
             "{\"name\":\"$name\",\"organizationId\":\"$org_id\"}")
+        # CreateProject returns .id (v2) — fall back to .projectId for compat.
         existing=$(echo "$result" | jq -r '.id // .projectId // empty')
         if [[ -z "$existing" ]]; then
             err "Failed to create Project $name: $result"
@@ -289,9 +291,10 @@ create_project() {
         ok "Created Project: $name ($existing)"
     fi
     # Ensure projectRoleAssertion is enabled (so roles appear in tokens).
+    # UpdateProject expects `projectId` in the body (not `id`).
     local upd
     upd=$(zapi POST /zitadel.project.v2.ProjectService/UpdateProject \
-        "{\"id\":\"$existing\",\"projectRoleAssertion\":true}")
+        "{\"projectId\":\"$existing\",\"projectRoleAssertion\":true}")
     if echo "$upd" | jq -e '.changeDate' >/dev/null 2>&1; then
         ok "Enabled projectRoleAssertion"
     elif echo "$upd" | jq -e '.code == "failed_precondition"' >/dev/null 2>&1; then
