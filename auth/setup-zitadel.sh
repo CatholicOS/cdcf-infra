@@ -157,7 +157,9 @@ create_org() {
     fi
     log "Creating Org: $name"
     local result
-    result=$(zapi POST /zitadel.org.v2.OrganizationService/CreateOrganization "{\"name\":\"$name\"}")
+    # Zitadel v2 uses AddOrganization (not CreateOrganization) for Orgs,
+    # but CreateProject + CreateApplication for the other resources.
+    result=$(zapi POST /zitadel.org.v2.OrganizationService/AddOrganization "{\"name\":\"$name\"}")
     local org_id
     org_id=$(echo "$result" | jq -r '.organizationId // empty')
     if [[ -z "$org_id" ]]; then
