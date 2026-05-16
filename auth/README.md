@@ -25,7 +25,7 @@ Plesk's Docker extension picks up `docker-compose.prod.yml` at the path above vi
 ## Architecture pin
 
 - Single Zitadel instance, **one Zitadel Org per property** (`CDCF`, `LiturgicalCalendar`, `BibleGet`, `OntoKit`). No automatic cross-property SSO — intentional.
-- **No `zitadel-login` v2 service.** Each property's frontend implements its own login UI calling Zitadel APIs. Zitadel's built-in v1 console at `/ui/console/` is retained for admin tasks only.
+- **`zitadel-login` v2 UI service is deployed** but ONLY serves `/ui/v2/login/*` — that's the login flow the **admin console** (`/ui/console/`) redirects to. Per-property end-user login UIs are still built into each property's frontend (calling Zitadel APIs directly). The two concerns are independent: admin console login (this service) vs. end-user login (each property's own UI).
 - **Shared OpenFGA**, with its own database on the host Postgres.
 - **Host Postgres only** — no containerized DBs. One Postgres instance to back up, patch, monitor.
 - Phase 1 consumer: LiturgicalCalendarAPI. Other Orgs are pre-provisioned stubs.
@@ -125,37 +125,25 @@ sudo docker compose --env-file .env.production -f docker-compose.prod.yml up -d
 curl -s http://127.0.0.1:8080/debug/ready   # Zitadel → 200
 curl -s http://127.0.0.1:8081/healthz       # OpenFGA → 200
 
-# 6. The automation-user PAT lands at /opt/cdcf-auth/runtime/zitadel-data/automation-user.pat
-#    after first boot. Run the bootstrap scripts:
+# 6. Two PAT files land in /opt/cdcf-auth/runtime/zitadel-data/ after first boot:
+#      automation-user.pat  - IAM_OWNER, used by setup-zitadel.sh and our own admin scripts
+#      login-client.pat     - IAM_LOGIN_CLIENT, consumed by the zitadel-login container
+#    Run the bootstrap scripts using the automation PAT:
 sudo /opt/cdcf-auth/auth/setup-zitadel.sh --target production --create-orgs
 sudo /opt/cdcf-auth/auth/setup-openfga.sh --target production --create-store liturgical_calendar
 ```
 
 ## Plesk-side setup
 
-Two subdomains, configured in Plesk's UI:
+Two subdomains + three Plesk Docker Proxy Rules. DNS + Let's Encrypt set up in the standard Plesk UI; routing is handled by Tools & Settings → Docker → Proxy Rules (NOT by "Additional nginx directives", which gets shadowed by Plesk's default `location /` going to Apache).
 
-| Subdomain | Reverse-proxies to | Notes |
-| --- | --- | --- |
-| `auth.catholicdigitalcommons.org` | `http://127.0.0.1:8080` | Let's Encrypt; pass `X-Forwarded-Proto: https` |
-| `authz.catholicdigitalcommons.org` | `http://127.0.0.1:8081` | Let's Encrypt; pass `X-Forwarded-Proto: https` |
+| Subdomain | Path | Container | Container port | Purpose |
+| --- | --- | --- | --- | --- |
+| `auth.catholicdigitalcommons.org` | `/ui/v2/login` | `cdcf-auth-zitadel-login-1` | 3000 | Admin console login flow (v2 login UI) |
+| `auth.catholicdigitalcommons.org` | `/` (catch-all) | `cdcf-auth-zitadel-1` | 8080 | Zitadel backend (APIs, console, OIDC endpoints) |
+| `authz.catholicdigitalcommons.org` | `/` | `cdcf-auth-openfga-1` | 8080 | OpenFGA HTTP API |
 
-Sample nginx directives (paste into Plesk's *"Additional nginx directives"* per subdomain):
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:8080;  # 8081 for the authz subdomain
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Forwarded-Host $host;
-    proxy_request_buffering off;
-    proxy_buffering off;
-    client_max_body_size 10m;
-}
-```
+**Order matters in Plesk's UI** — the more specific path (`/ui/v2/login`) must be evaluated before the catch-all (`/`). Plesk handles this correctly if you add the more specific rule first.
 
 ## Backup
 

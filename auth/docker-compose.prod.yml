@@ -61,18 +61,57 @@ services:
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: automation
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: automation
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: '2099-12-31T23:59:59Z'
-      # Write the PAT to a file inside the bind-mounted data dir instead of
-      # logging it to stdout. Without this, the PAT is emitted to container
-      # logs during the 03_default_instance migration — visible to anyone
-      # with `docker logs` access.
+      # Write the IAM_OWNER PAT to a file inside the bind-mounted data dir
+      # instead of logging it to stdout. Without this, the PAT is emitted to
+      # container logs during the 03_default_instance migration.
       ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel-data/automation-user.pat
+      # Second machine user with IAM_LOGIN_CLIENT role, consumed by the
+      # zitadel-login (v2 UI) container. Required for admin console login.
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME: login-client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: Login V2 Client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE: '2099-12-31T23:59:59Z'
+      ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH: /zitadel-data/login-client.pat
+      # Enable Login V2 + point Zitadel's OIDC/SAML redirects at the public
+      # /ui/v2/login path. Plesk routes this path to the zitadel-login
+      # container; everything else goes to the zitadel backend.
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: 'true'
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: https://auth.catholicdigitalcommons.org/ui/v2/login
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: https://auth.catholicdigitalcommons.org/ui/v2/login/login?authRequest=
+      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: https://auth.catholicdigitalcommons.org/ui/v2/login/logout?post_logout_redirect=
+      ZITADEL_SAML_DEFAULTLOGINURLV2: https://auth.catholicdigitalcommons.org/ui/v2/login/login?samlRequest=
     volumes:
       # Bind mount must be world-writable since the Zitadel image is scratch-based
-      # and the runtime UID can't be predicted. The PAT file lands at
-      # /zitadel-data/automation-user.pat on first boot.
+      # and the runtime UID can't be predicted. The PAT files (automation +
+      # login-client) land here on first boot.
       - /opt/cdcf-auth/runtime/zitadel-data:/zitadel-data
     ports:
       - '127.0.0.1:8080:8080'
+
+  # --- Zitadel Login V2 UI (Next.js) ---------------------------------
+  # Serves /ui/v2/login/* — used by the admin console login flow.
+  # Per-property end-user login UIs are still implemented in each
+  # property's own frontend (calling Zitadel APIs directly); this
+  # service exists for ADMIN console access only.
+  zitadel-login:
+    image: ghcr.io/zitadel/zitadel-login:v4.12.2
+    restart: unless-stopped
+    <<: *host-gateway
+    depends_on:
+      zitadel:
+        condition: service_started
+    environment:
+      ZITADEL_API_URL: http://zitadel:8080
+      NEXT_PUBLIC_BASE_PATH: /ui/v2/login
+      ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel-data/login-client.pat
+      # Zitadel routes by Host header (multi-instance feature). Backend
+      # API calls from the login container must present the public host
+      # so the right instance is selected.
+      CUSTOM_REQUEST_HEADERS: 'Host:auth.catholicdigitalcommons.org'
+    volumes:
+      # Read-only: the login service only consumes login-client.pat
+      - /opt/cdcf-auth/runtime/zitadel-data:/zitadel-data:ro
+    ports:
+      - '127.0.0.1:8082:3000'
 
   # --- OpenFGA (relationship authz) -----------------------------------
   openfga-migrate:
