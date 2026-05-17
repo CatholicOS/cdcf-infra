@@ -31,7 +31,7 @@ x-host-gateway: &host-gateway
 services:
   # --- Zitadel (identity) ---------------------------------------------
   zitadel:
-    image: ghcr.io/zitadel/zitadel:v4.12.2
+    image: ghcr.io/zitadel/zitadel:v4.15.0
     restart: unless-stopped
     <<: *host-gateway
     command: start-from-init --masterkeyFromEnv
@@ -107,7 +107,7 @@ services:
   # property's own frontend (calling Zitadel APIs directly); this
   # service exists for ADMIN console access only.
   zitadel-login:
-    image: ghcr.io/zitadel/zitadel-login:v4.12.2
+    image: ghcr.io/zitadel/zitadel-login:v4.15.0
     restart: unless-stopped
     <<: *host-gateway
     depends_on:
