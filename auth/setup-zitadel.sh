@@ -14,11 +14,17 @@
 #   --provision-litcal         Under LiturgicalCalendar Org, create the
 #                              LiturgicalCalendarAPI Project + roles +
 #                              the API OIDC app.
+#   --provision-litcal-frontend
+#                              Under the same Project, create a Web/PKCE OIDC
+#                              app for the frontend, with prod + staging
+#                              callbacks registered. Requires --provision-litcal
+#                              to have run (or be running together).
 #   --rename-bootstrap-admin   If the IAM admin user still has the legacy
 #                              `<username>@<orgdomain>` suffix in its
 #                              username, rename it to $ZITADEL_ADMIN_EMAIL.
 #   --all                      Run --rename-bootstrap-admin, --create-orgs,
-#                              --provision-litcal in sequence.
+#                              --provision-litcal, --provision-litcal-frontend
+#                              in sequence.
 #
 # Usage:
 #   ./setup-zitadel.sh --target production --all
@@ -43,8 +49,9 @@ Actions:
   --create-orgs               Create CDCF, LiturgicalCalendar, BibleGet, OntoKit (idempotent)
   --create-org NAME           Create a single Org by name (idempotent)
   --provision-litcal          Provision LitCal Project + roles + API app
+  --provision-litcal-frontend Provision LitCal Frontend OIDC app (Web/PKCE)
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
-  --all                       --rename-bootstrap-admin, --create-orgs, --provision-litcal
+  --all                       Above four in dependency order
 
 Environment variables (sourced from .env.\$target):
   ZITADEL_ISSUER                 (default: https://auth.catholicdigitalcommons.org)
@@ -61,8 +68,9 @@ while [[ $# -gt 0 ]]; do
         --create-orgs)               ACTIONS+=("create-orgs"); shift ;;
         --create-org)                ACTIONS+=("create-org"); SINGLE_ORG="$2"; shift 2 ;;
         --provision-litcal)          ACTIONS+=("provision-litcal"); shift ;;
+        --provision-litcal-frontend) ACTIONS+=("provision-litcal-frontend"); shift ;;
         --rename-bootstrap-admin)    ACTIONS+=("rename-bootstrap-admin"); shift ;;
-        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal"); shift ;;
+        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend"); shift ;;
         -h|--help)                   usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
     esac
@@ -235,10 +243,19 @@ do_rename_bootstrap_admin() {
 
 LITCAL_PROJECT_NAME="LiturgicalCalendarAPI"
 LITCAL_API_APP_NAME="LiturgicalCalendarAPI Backend"
+LITCAL_FRONTEND_APP_NAME="LiturgicalCalendarFrontend"
 LITCAL_ROLES=("admin:System Administrator" \
               "developer:Developer (API consumer)" \
               "calendar_editor:Calendar Editor" \
               "test_editor:Test Definition Author")
+
+# Frontend deployment URLs (prod + staging). Used to register OIDC
+# callback + post-logout URIs on the Frontend OIDC app.
+LITCAL_FRONTEND_URLS=(
+    "https://litcal.johnromanodorazio.com"
+    "https://litcal-staging.johnromanodorazio.com"
+)
+LITCAL_FRONTEND_CALLBACK_PATH="/auth/callback.php"
 
 # x-zitadel-orgid header lets a PAT operate on a different org than its home org.
 # Wrapped zapi variant for org-scoped management API calls.
@@ -329,6 +346,71 @@ create_roles() {
     done
 }
 
+# Create an OIDC Web-type app with PKCE (auth_method_type=NONE, no client
+# secret). Used by browser-flow frontends. Idempotent: if the app exists,
+# verify+sync redirect URIs to match what's passed in (additive — the
+# server-side merge keeps any URIs we don't enumerate).
+#
+# Args:
+#   $1 project_id
+#   $2 app_name
+#   $3 redirect_uris_json   JSON array, e.g. ["https://x/cb","https://y/cb"]
+#   $4 post_logout_uris_json JSON array
+create_oidc_web_app() {
+    local project_id="$1" name="$2" redirect_uris_json="$3" post_logout_uris_json="$4"
+    local oidc_payload
+    oidc_payload=$(cat <<JSON
+{
+    "redirectUris": $redirect_uris_json,
+    "postLogoutRedirectUris": $post_logout_uris_json,
+    "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
+    "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE", "OIDC_GRANT_TYPE_REFRESH_TOKEN"],
+    "applicationType": "OIDC_APP_TYPE_WEB",
+    "authMethodType": "OIDC_AUTH_METHOD_TYPE_NONE",
+    "accessTokenType": "OIDC_TOKEN_TYPE_JWT",
+    "idTokenRoleAssertion": true,
+    "accessTokenRoleAssertion": true,
+    "idTokenUserinfoAssertion": true
+}
+JSON
+)
+    local existing
+    existing=$(zapi POST /zitadel.application.v2.ApplicationService/ListApplications \
+        "{\"filters\":[{\"project_id_filter\":{\"projectId\":\"$project_id\"}},{\"name_filter\":{\"name\":\"$name\"}}]}")
+    local app_id client_id
+    app_id=$(echo "$existing" | jq -r '.applications[0].id // .applications[0].applicationId // empty')
+    if [[ -n "$app_id" ]]; then
+        client_id=$(echo "$existing" | jq -r '.applications[0].oidcConfiguration.clientId // empty')
+        ok "OIDC Web app exists: $name ($app_id, client_id=$client_id)"
+        # Sync redirect URIs (idempotent — re-applying the same set is a no-op
+        # server-side; if they've drifted, we converge them back).
+        local upd
+        upd=$(zapi POST /zitadel.application.v2.ApplicationService/UpdateApplication \
+            "{\"projectId\":\"$project_id\",\"applicationId\":\"$app_id\",\"oidcConfiguration\":$oidc_payload}")
+        if echo "$upd" | jq -e '.changeDate' >/dev/null 2>&1; then
+            ok "Updated OIDC config (synced redirect URIs)"
+        elif echo "$upd" | jq -e '.code == "failed_precondition"' >/dev/null 2>&1; then
+            ok "OIDC config unchanged"
+        else
+            warn "Could not confirm OIDC config update: $upd"
+        fi
+        echo "$app_id|$client_id"
+        return 0
+    fi
+    log "Creating OIDC Web app: $name"
+    local result
+    result=$(zapi POST /zitadel.application.v2.ApplicationService/CreateApplication \
+        "{\"projectId\":\"$project_id\",\"name\":\"$name\",\"oidcConfiguration\":$oidc_payload}")
+    app_id=$(echo "$result" | jq -r '.id // .applicationId // empty')
+    client_id=$(echo "$result" | jq -r '.oidcConfiguration.clientId // .clientId // empty')
+    if [[ -z "$app_id" ]]; then
+        err "Failed to create Web app: $result"
+        exit 10
+    fi
+    ok "Created OIDC Web app: $name ($app_id, client_id=$client_id)"
+    echo "$app_id|$client_id"
+}
+
 # Create an OIDC API-type app (no redirect URIs; for service-to-service /
 # token-validation use). Idempotent: skips creation if an app of the same
 # name already exists in the project.
@@ -357,6 +439,39 @@ create_oidc_api_app() {
     fi
     ok "Created OIDC API app: $name ($app_id, client_id=$client_id)"
     echo "$app_id|$client_id"
+}
+
+do_provision_litcal_frontend() {
+    log "Provisioning LiturgicalCalendar Frontend OIDC app"
+    local org_id project_id
+    org_id=$(find_org_id "LiturgicalCalendar")
+    [[ -z "$org_id" ]] && { err "LiturgicalCalendar Org not found. Run --create-orgs first."; exit 11; }
+    project_id=$(find_project_id "$org_id" "$LITCAL_PROJECT_NAME")
+    [[ -z "$project_id" ]] && { err "Project $LITCAL_PROJECT_NAME not found. Run --provision-litcal first."; exit 12; }
+
+    # Build redirect_uris + post_logout_uris JSON arrays from LITCAL_FRONTEND_URLS.
+    local redirect_uris_json post_logout_uris_json
+    redirect_uris_json=$(printf '%s\n' "${LITCAL_FRONTEND_URLS[@]}" \
+        | jq -R --arg cb "$LITCAL_FRONTEND_CALLBACK_PATH" '. + $cb' | jq -s '.')
+    post_logout_uris_json=$(printf '%s\n' "${LITCAL_FRONTEND_URLS[@]}" | jq -R '.' | jq -s '.')
+
+    local app_info
+    app_info=$(create_oidc_web_app "$project_id" "$LITCAL_FRONTEND_APP_NAME" \
+        "$redirect_uris_json" "$post_logout_uris_json")
+    local app_id="${app_info%|*}" client_id="${app_info#*|}"
+
+    echo
+    echo "${B}=== LiturgicalCalendar Frontend handoff values ===${N}"
+    echo "ZITADEL_ISSUER=$ZITADEL_ISSUER"
+    echo "ZITADEL_PROJECT_ID=$project_id"
+    echo "ZITADEL_FRONTEND_APP_ID=$app_id"
+    echo "ZITADEL_FRONTEND_CLIENT_ID=$client_id"
+    echo "# No client secret — PKCE (auth_method_type=NONE)"
+    echo "# Registered redirect URIs:"
+    for url in "${LITCAL_FRONTEND_URLS[@]}"; do echo "#   $url$LITCAL_FRONTEND_CALLBACK_PATH"; done
+    echo "# Registered post-logout URIs:"
+    for url in "${LITCAL_FRONTEND_URLS[@]}"; do echo "#   $url"; done
+    echo
 }
 
 do_provision_litcal() {
@@ -397,10 +512,11 @@ log "Target: $TARGET (issuer: $ZITADEL_ISSUER, internal: $ZITADEL_INTERNAL_URL)"
 
 for action in "${ACTIONS[@]}"; do
     case "$action" in
-        rename-bootstrap-admin) do_rename_bootstrap_admin ;;
-        create-orgs)            do_create_orgs ;;
-        create-org)             do_create_org ;;
-        provision-litcal)       do_provision_litcal ;;
+        rename-bootstrap-admin)     do_rename_bootstrap_admin ;;
+        create-orgs)                do_create_orgs ;;
+        create-org)                 do_create_org ;;
+        provision-litcal)           do_provision_litcal ;;
+        provision-litcal-frontend)  do_provision_litcal_frontend ;;
     esac
 done
 
