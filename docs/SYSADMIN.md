@@ -517,11 +517,24 @@ Each entry: error message → root cause → fix. Drawn from real incidents duri
 
 **Fix**: ensure target env file is HIGHER priority in the loader list than any shadowing file. Order is `.env.local → .env.development → .env.staging → .env.production → .env`.
 
-### 9.10 New user registered via passkey but no email verification sent
+### 9.10 New user registered via v2 login UI signup but no email verification sent
 
-**Cause**: Passkey signup flow doesn't auto-trigger email verification (WebAuthn is treated as sufficient proof of identity). User is created in `USER_STATE_ACTIVE` with email unverified.
+**Cause**: The Zitadel v2 login UI (Next.js — `ghcr.io/zitadel/zitadel-login`) calls `AddHumanUser` on signup. **By default it omits the `email.verification.send_code` field** on that call, so Zitadel creates the user in `USER_STATE_ACTIVE` with email unverified — and queues no notification at all (even with SMTP healthy and the new user being a passkey signup).
 
-**Fix**: trigger verification explicitly via management API `POST /management/v1/users/{id}/email/_resendinitialization` (or equivalent v2 endpoint), or add a "verify email" prompt in the consuming app's UX.
+The chain just never starts; Postfix won't show any outbound attempt because Zitadel never asked it to send.
+
+**Fix**: set `EMAIL_VERIFICATION=true` as an env var on the `zitadel-login` service. This is a Next.js env var consumed by the login UI itself — NOT a Zitadel backend setting and NOT in the Zitadel docs as a backend-side toggle. When set, the UI populates the verification block on `AddHumanUser`; Zitadel then queues the verification email at signup time.
+
+```yaml
+# auth/docker-compose.prod.yml — zitadel-login service env
+EMAIL_VERIFICATION: 'true'
+```
+
+**Diagnosis hint**: if SMTP `/admin/v1/smtp/_test` works and Postfix logs show the test delivery (DKIM signed, SPF pass), but real signups produce no outbound attempts in the mail log, this env var is the differentiator. Compare against a working dev compose where the same UI flow does send emails.
+
+**Side-effect fix already on disk**: this gotcha was hit on the umbrella's staging deploy; the env var is now in `auth/docker-compose.prod.yml` and applied live. If you wipe + rebootstrap and the var isn't there for some reason, this section is the marker for the regression.
+
+**Alternative manual recovery for an existing wrong-state user**: trigger verification on the affected user explicitly via management API: `POST /management/v1/users/{id}/email/_resendinitialization` (or equivalent v2 endpoint). Useful for users that signed up BEFORE the env var was set.
 
 ---
 
