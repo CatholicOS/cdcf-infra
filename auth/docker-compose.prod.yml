@@ -121,6 +121,12 @@ services:
       # API calls from the login container must present the public host
       # so the right instance is selected.
       CUSTOM_REQUEST_HEADERS: 'Host:auth.catholicdigitalcommons.org'
+      # Tell the v2 login UI to set `email.verification.send_code` on
+      # AddHumanUser calls during signup. Without this, the UI omits the
+      # field, Zitadel never queues a verification email (even with SMTP
+      # configured + the new user being a passkey signup), and the user
+      # ends up in USER_STATE_ACTIVE with email unverified.
+      EMAIL_VERIFICATION: 'true'
     volumes:
       # Read-only: the login service only consumes login-client.pat
       - /opt/cdcf-auth/runtime/zitadel-data:/zitadel-data:ro
