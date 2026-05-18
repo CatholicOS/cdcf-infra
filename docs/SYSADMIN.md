@@ -574,6 +574,7 @@ All require automation PAT in `Authorization: Bearer ...` + `Host: auth.catholic
 ### 10.3 Gotchas list (one-liners)
 
 - Zitadel v2 verb inconsistency: `AddOrganization` but `CreateProject` + `CreateApplication`. `UpdateProject` body uses `projectId`, not `id`.
+- Zitadel v2 `PATCH /v2/users/{id}` requires a `human: {}` or `machine: {}` type discriminator in the body — even for top-level field updates like `username`. Without it the API returns `501 "user type is not implemented"`, which sounds like a real gap but is actually a missing-discriminator error. See §10.2 for the correct body shape.
 - `DEFAULTINSTANCE_DOMAINPOLICY_*` env vars apply to USERS CREATED AFTER bootstrap, not retroactively to the bootstrap admin itself.
 - `ZITADEL_MASTERKEY` must be exactly 32 chars.
 - `ZITADEL_ADMIN_PASSWORD` must satisfy default complexity policy (upper + lower + digit + symbol). Alphanumeric-only crashes the `03_default_instance` migration.
