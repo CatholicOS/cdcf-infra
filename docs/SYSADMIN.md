@@ -493,7 +493,7 @@ Each entry: error message → root cause → fix. Drawn from real incidents duri
 
 **Cause**: Even with `DEFAULTINSTANCE_DOMAINPOLICY_USERLOGINMUSTBEDOMAIN=false` set in compose, the domain policy doesn't apply retroactively to the bootstrap user created inside the same `03_default_instance` migration.
 
-**Fix**: `./setup-zitadel.sh --target production --rename-bootstrap-admin` (renames to `${ZITADEL_ADMIN_EMAIL}` via `PUT /management/v1/users/{id}/username`). Note: `PUT` not `POST` — Zitadel's v1 management API uses PUT for username changes; POST returns 405; the v2 PATCH `/v2/users/{id}` returns 501 ("user type is not implemented").
+**Fix**: `./setup-zitadel.sh --target production --rename-bootstrap-admin` (renames to `${ZITADEL_ADMIN_EMAIL}` via `PATCH /v2/users/{id}` with body `{"username":"...","human":{}}`). The `"human":{}` empty type discriminator is REQUIRED — without it the API returns `501 "user type is not implemented"`, which is a misleading error meaning "missing type discriminator", not a real implementation gap.
 
 ### 9.7 Property's frontend login fails after env "just" being set
 
@@ -565,7 +565,8 @@ All require automation PAT in `Authorization: Bearer ...` + `Host: auth.catholic
 | Update Project | `POST /zitadel.project.v2.ProjectService/UpdateProject` — body uses `projectId`, NOT `id` |
 | Add Role | `POST /zitadel.project.v2.ProjectService/AddProjectRole` |
 | Create App (API or OIDC) | `POST /zitadel.application.v2.ApplicationService/CreateApplication` |
-| Rename user | `PUT /management/v1/users/{id}/username` (PUT, not POST — POST returns 405) |
+| Rename user | `PATCH /v2/users/{id}` with `{"username":"...","human":{}}` for human users or `{"username":"...","machine":{}}` for machine users. The empty type-discriminator wrapper is required even when only `username` changes. v1 fallback (if v2 unavailable for some reason): `PUT /management/v1/users/{id}/username` with `{"userName":"..."}`. |
+| Update user profile (display name, etc.) | `PATCH /v2/users/{id}` with `{"human":{"profile":{...}}}` |
 | Add SMTP provider | `POST /admin/v1/email/smtp` |
 | Activate SMTP provider | `POST /admin/v1/smtp/{id}/_activate` |
 | Test SMTP send | `POST /admin/v1/smtp/{id}/_test` |

@@ -223,13 +223,18 @@ do_rename_bootstrap_admin() {
     current_username=$(echo "$users_body" | jq -r --arg id "$target_id" '.result[]? | select(.userId==$id) | .username')
 
     log "Renaming admin: $current_username → $ZITADEL_ADMIN_EMAIL (user $target_id)"
+    # v2 PATCH /v2/users/{id} requires a `human` (or `machine`) type
+    # discriminator in the body even when only top-level fields change.
+    # Without the empty `human: {}`, the API returns 501
+    # "user type is not implemented" — a misleading error that means
+    # "missing type discriminator", not a real implementation gap.
     local rename_result
-    rename_result=$(curl -sS -w "\n%{http_code}" -X PUT \
-        "${ZITADEL_INTERNAL_URL}/management/v1/users/${target_id}/username" \
+    rename_result=$(curl -sS -w "\n%{http_code}" -X PATCH \
+        "${ZITADEL_INTERNAL_URL}/v2/users/${target_id}" \
         -H "Host: $ZITADEL_HOST" \
         -H "Authorization: Bearer $PAT" \
         -H "Content-Type: application/json" \
-        -d "{\"userName\":\"$ZITADEL_ADMIN_EMAIL\"}")
+        -d "{\"username\":\"$ZITADEL_ADMIN_EMAIL\",\"human\":{}}")
     local rename_code
     rename_code=$(echo "$rename_result" | tail -1)
     if [[ "$rename_code" != "200" ]]; then
