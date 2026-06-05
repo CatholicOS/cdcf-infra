@@ -528,9 +528,20 @@ do_provision_litcal_frontend() {
 CDCF_PROJECT_NAME="CDCF Website"
 CDCF_APP_NAME="CDCF Website"
 CDCF_APP_NAME_NONPROD="CDCF Website (Non-Prod)"
-CDCF_ROLES=("team_member:Team Member (bio self-edit)" \
-            "editor:Editor" \
-            "admin:System Administrator")
+# Catalog of WP roles, mirrored 1:1 so the IAM layer is the canonical
+# authority over capability names. `subscriber` is the implicit default —
+# every email-verified Zitadel sign-up is treated as a Subscriber by the
+# cdcf-website bearer validator + Auth.js role extraction, even before
+# an explicit userGrant exists. Elevated roles (contributor → admin) get
+# explicit Zitadel userGrant records via the Phase 6 role-elevation
+# workflow. `team_member`-as-role was removed in Phase 5: the bio-edit
+# ownership signal is the `author_team_member` ACF link, not a role —
+# a linked Subscriber can still edit their bio.
+CDCF_ROLES=("subscriber:Subscriber (default, no edit capabilities)" \
+            "contributor:Contributor (drafts only)" \
+            "author:Author (publish own posts)" \
+            "editor:Editor (publish + edit others)" \
+            "administrator:Administrator (full WP-admin)")
 
 # Production origins (HTTPS only, devMode=false). Get their own confidential
 # client + client_secret so production credentials are never shared with

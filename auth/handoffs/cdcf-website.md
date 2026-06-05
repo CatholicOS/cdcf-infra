@@ -27,10 +27,24 @@ This handoff records only the **non-secret** values needed to point the cdcf-web
     - Post-logout URIs:
       - `https://staging.catholicdigitalcommons.org`
       - `http://localhost:3000`
-- **Roles defined** (on the CDCF Website Project):
-  - `team_member` — Team Member (bio self-edit)
-  - `editor` — Editor
-  - `admin` — System Administrator
+- **Roles defined** (on the CDCF Website Project) — mirror the WP role hierarchy 1:1 so the IAM layer is the canonical authority over capability names:
+  - `subscriber` — Subscriber (default, no edit capabilities)
+  - `contributor` — Contributor (drafts only)
+  - `author` — Author (publish own posts)
+  - `editor` — Editor (publish + edit others)
+  - `administrator` — Administrator (full WP-admin)
+
+### Default role on sign-up
+
+**Subscriber is implicit.** Every email-verified Zitadel sign-up is treated as a Subscriber by the cdcf-website bearer validator and Auth.js role extraction, even before any explicit `userGrant` exists. There is no Zitadel Action or pre-user-creation hook that auto-grants — the floor capability is decided consumer-side. Elevated roles (`contributor` through `administrator`) DO receive explicit Zitadel `userGrant` records, written via the Phase 6 role-elevation workflow (see `~/.claude/plans/cdcf-role-mirroring.md` in the planner). Until that workflow ships, elevated roles are granted manually via the Zitadel admin console.
+
+### WP user provisioning model
+
+On the **first** sign-in for an email-verified Zitadel user, the cdcf-website bearer validator (`wordpress/themes/cdcf-headless/includes/auth/zitadel-bearer.php`) auto-provisions a matching WP user with `role=subscriber`, sets `user_email` from the userinfo `email` claim, and stores the Zitadel `sub` claim as user-meta `cdcf_zitadel_sub`. All subsequent sign-ins look up the WP user by sub first (immutable across Zitadel email changes), falling back to email. On email drift (sub matches but emails differ), the WP `user_email` is updated to match the Zitadel claim — **never a second WP user**. Phase 5 of the role-mirroring plan; supersedes locked decision #1 of the bio-edit plan for the Subscriber path.
+
+### Re-running `--provision-cdcf-website` against an already-provisioned project
+
+`create_roles` only adds; it doesn't delete or rename existing roles. If you re-run against the CDCF Website project after a role-catalog change (e.g. Phase 5 of role-mirroring), any role keys that disappeared from `CDCF_ROLES` will remain in Zitadel as orphans. Clean them up manually in the Zitadel admin console: `CDCF` Org → Projects → `CDCF Website` → Roles → trash the unwanted entries. Roles with active `userGrants` block deletion until the grants are removed first.
 
 ## Out-of-band (delivered separately, not in this repo)
 

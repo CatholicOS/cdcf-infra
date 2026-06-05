@@ -17,3 +17,6 @@
 .venv/
 __pycache__/
 *.pyc
+
+# Serena MCP per-developer IDE state — not shared, not infrastructure
+.serena/
