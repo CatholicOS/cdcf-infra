@@ -19,12 +19,19 @@
 #                              app for the frontend, with prod + staging
 #                              callbacks registered. Requires --provision-litcal
 #                              to have run (or be running together).
+#   --provision-cdcf-website   Under the CDCF Org, create the "CDCF Website"
+#                              Project + roles (team_member/editor/admin) + a
+#                              confidential OIDC Web app (client_secret_post)
+#                              for the Next.js frontend, with prod + staging +
+#                              localhost dev callbacks registered. Emits
+#                              client_secret ONCE on first run; re-runs against
+#                              an existing app cannot recover the secret.
 #   --rename-bootstrap-admin   If the IAM admin user still has the legacy
 #                              `<username>@<orgdomain>` suffix in its
 #                              username, rename it to $ZITADEL_ADMIN_EMAIL.
 #   --all                      Run --rename-bootstrap-admin, --create-orgs,
-#                              --provision-litcal, --provision-litcal-frontend
-#                              in sequence.
+#                              --provision-litcal, --provision-litcal-frontend,
+#                              --provision-cdcf-website in sequence.
 #
 # Usage:
 #   ./setup-zitadel.sh --target production --all
@@ -50,8 +57,9 @@ Actions:
   --create-org NAME           Create a single Org by name (idempotent)
   --provision-litcal          Provision LitCal Project + roles + API app
   --provision-litcal-frontend Provision LitCal Frontend OIDC app (Web/PKCE)
+  --provision-cdcf-website    Provision CDCF Website Project + roles + Web OIDC app (client_secret_post)
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
-  --all                       Above four in dependency order
+  --all                       Above five in dependency order
 
 Environment variables (sourced from .env.\$target):
   ZITADEL_ISSUER                 (default: https://auth.catholicdigitalcommons.org)
@@ -69,8 +77,9 @@ while [[ $# -gt 0 ]]; do
         --create-org)                ACTIONS+=("create-org"); SINGLE_ORG="$2"; shift 2 ;;
         --provision-litcal)          ACTIONS+=("provision-litcal"); shift ;;
         --provision-litcal-frontend) ACTIONS+=("provision-litcal-frontend"); shift ;;
+        --provision-cdcf-website)    ACTIONS+=("provision-cdcf-website"); shift ;;
         --rename-bootstrap-admin)    ACTIONS+=("rename-bootstrap-admin"); shift ;;
-        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend"); shift ;;
+        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend" "provision-cdcf-website"); shift ;;
         -h|--help)                   usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
     esac
@@ -351,18 +360,36 @@ create_roles() {
     done
 }
 
-# Create an OIDC Web-type app with PKCE (auth_method_type=NONE, no client
-# secret). Used by browser-flow frontends. Idempotent: if the app exists,
-# verify+sync redirect URIs to match what's passed in (additive — the
-# server-side merge keeps any URIs we don't enumerate).
+# Create an OIDC Web-type app. Used by browser-flow frontends. Idempotent:
+# if the app exists, verify+sync redirect URIs (additive — server-side merge
+# keeps URIs we don't enumerate).
+#
+# Auth method defaults to PKCE (NONE, no client secret) for backwards compat
+# with existing LitCal frontend callers. Pass OIDC_AUTH_METHOD_TYPE_POST or
+# OIDC_AUTH_METHOD_TYPE_BASIC for a confidential client (server-side flow with
+# client_secret_post / client_secret_basic respectively — Auth.js v5, NextAuth,
+# omniauth-oidc, etc.).
+#
+# Dev mode (default false) allows HTTP redirect URIs — required for localhost
+# dev callbacks against this production Zitadel instance.
 #
 # Args:
 #   $1 project_id
 #   $2 app_name
 #   $3 redirect_uris_json   JSON array, e.g. ["https://x/cb","https://y/cb"]
 #   $4 post_logout_uris_json JSON array
+#   $5 auth_method_type     OIDC_AUTH_METHOD_TYPE_NONE | _POST | _BASIC (default: _NONE)
+#   $6 dev_mode             "true" | "false" (default: "false")
+#
+# Returns on stdout: "app_id|client_id|client_secret"
+#   - client_secret is empty for PKCE apps (auth_method_type=NONE)
+#   - client_secret is empty when the app ALREADY EXISTED (Zitadel's
+#     ListApplications doesn't return secrets; rotation is a separate action
+#     against the regenerate endpoint — not implemented here).
 create_oidc_web_app() {
     local project_id="$1" name="$2" redirect_uris_json="$3" post_logout_uris_json="$4"
+    local auth_method_type="${5:-OIDC_AUTH_METHOD_TYPE_NONE}"
+    local dev_mode="${6:-false}"
     local oidc_payload
     oidc_payload=$(cat <<JSON
 {
@@ -371,8 +398,9 @@ create_oidc_web_app() {
     "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
     "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE", "OIDC_GRANT_TYPE_REFRESH_TOKEN"],
     "applicationType": "OIDC_APP_TYPE_WEB",
-    "authMethodType": "OIDC_AUTH_METHOD_TYPE_NONE",
+    "authMethodType": "$auth_method_type",
     "accessTokenType": "OIDC_TOKEN_TYPE_JWT",
+    "devMode": $dev_mode,
     "idTokenRoleAssertion": true,
     "accessTokenRoleAssertion": true,
     "idTokenUserinfoAssertion": true
@@ -399,10 +427,11 @@ JSON
         else
             warn "Could not confirm OIDC config update: $upd"
         fi
-        echo "$app_id|$client_id"
+        # Client secret unrecoverable on the "exists" branch — emit empty.
+        echo "$app_id|$client_id|"
         return 0
     fi
-    log "Creating OIDC Web app: $name"
+    log "Creating OIDC Web app: $name (authMethod=$auth_method_type, devMode=$dev_mode)"
     local result
     result=$(zapi POST /zitadel.application.v2.ApplicationService/CreateApplication \
         "{\"projectId\":\"$project_id\",\"name\":\"$name\",\"oidcConfiguration\":$oidc_payload}")
@@ -412,8 +441,12 @@ JSON
         err "Failed to create Web app: $result"
         exit 10
     fi
+    # Capture the one-time client secret for confidential clients. Zitadel
+    # returns it inside oidcConfiguration on create; never retrievable later.
+    local client_secret
+    client_secret=$(echo "$result" | jq -r '.oidcConfiguration.clientSecret // .clientSecret // empty')
     ok "Created OIDC Web app: $name ($app_id, client_id=$client_id)"
-    echo "$app_id|$client_id"
+    echo "$app_id|$client_id|$client_secret"
 }
 
 # Create an OIDC API-type app (no redirect URIs; for service-to-service /
@@ -460,10 +493,12 @@ do_provision_litcal_frontend() {
         | jq -R --arg cb "$LITCAL_FRONTEND_CALLBACK_PATH" '. + $cb' | jq -s '.')
     post_logout_uris_json=$(printf '%s\n' "${LITCAL_FRONTEND_URLS[@]}" | jq -R '.' | jq -s '.')
 
-    local app_info
+    local app_info app_id client_id _client_secret
     app_info=$(create_oidc_web_app "$project_id" "$LITCAL_FRONTEND_APP_NAME" \
         "$redirect_uris_json" "$post_logout_uris_json")
-    local app_id="${app_info%|*}" client_id="${app_info#*|}"
+    # LitCal frontend uses PKCE (default auth_method_type=NONE) so the secret
+    # field is always empty here — discard it.
+    IFS='|' read -r app_id client_id _client_secret <<<"$app_info"
 
     echo
     echo "${B}=== LiturgicalCalendar Frontend handoff values ===${N}"
@@ -476,6 +511,77 @@ do_provision_litcal_frontend() {
     for url in "${LITCAL_FRONTEND_URLS[@]}"; do echo "#   $url$LITCAL_FRONTEND_CALLBACK_PATH"; done
     echo "# Registered post-logout URIs:"
     for url in "${LITCAL_FRONTEND_URLS[@]}"; do echo "#   $url"; done
+    echo
+}
+
+# --- CDCF Website provisioning -------------------------------------------
+
+CDCF_PROJECT_NAME="CDCF Website"
+CDCF_APP_NAME="CDCF Website"
+CDCF_ROLES=("team_member:Team Member (bio self-edit)" \
+            "editor:Editor" \
+            "admin:System Administrator")
+
+# Public origins served by the Next.js frontend. Used to register OIDC
+# callback + post-logout URIs on the Web app.
+CDCF_FRONTEND_URLS=(
+    "https://catholicdigitalcommons.org"
+    "https://staging.catholicdigitalcommons.org"
+)
+# Dev callback (localhost over HTTP) — requires devMode=true on the app.
+CDCF_FRONTEND_DEV_URL="http://localhost:3000"
+CDCF_FRONTEND_CALLBACK_PATH="/api/auth/callback/zitadel"
+
+do_provision_cdcf_website() {
+    log "Provisioning CDCF Website"
+    local org_id
+    org_id=$(find_org_id "CDCF")
+    if [[ -z "$org_id" ]]; then
+        err "CDCF Org not found. Run --create-orgs first."
+        exit 13
+    fi
+    ok "Found CDCF Org: $org_id"
+
+    local project_id
+    project_id=$(create_project "$org_id" "$CDCF_PROJECT_NAME")
+
+    create_roles "$project_id" "${CDCF_ROLES[@]}"
+
+    # Build redirect + post-logout URI arrays (prod + staging + localhost dev).
+    local all_origins=("${CDCF_FRONTEND_URLS[@]}" "$CDCF_FRONTEND_DEV_URL")
+    local redirect_uris_json post_logout_uris_json
+    redirect_uris_json=$(printf '%s\n' "${all_origins[@]}" \
+        | jq -R --arg cb "$CDCF_FRONTEND_CALLBACK_PATH" '. + $cb' | jq -s '.')
+    post_logout_uris_json=$(printf '%s\n' "${all_origins[@]}" | jq -R '.' | jq -s '.')
+
+    # Confidential client with client_secret_post (Auth.js v5 server-side).
+    # devMode=true to permit the http://localhost dev callback.
+    local app_info app_id client_id client_secret
+    app_info=$(create_oidc_web_app "$project_id" "$CDCF_APP_NAME" \
+        "$redirect_uris_json" "$post_logout_uris_json" \
+        "OIDC_AUTH_METHOD_TYPE_POST" "true")
+    IFS='|' read -r app_id client_id client_secret <<<"$app_info"
+
+    echo
+    echo "${B}=== CDCF Website handoff values ===${N}"
+    echo "ZITADEL_ISSUER=$ZITADEL_ISSUER"
+    echo "ZITADEL_ORG_ID=$org_id"
+    echo "ZITADEL_PROJECT_ID=$project_id"
+    echo "ZITADEL_APP_ID=$app_id"
+    echo "AUTH_ZITADEL_ID=$client_id          # ← client_id"
+    if [[ -n "$client_secret" ]]; then
+        echo "AUTH_ZITADEL_SECRET=$client_secret   # ← client_secret (one-time emit)"
+    else
+        warn "Client secret not emitted (app already existed; ListApplications"
+        warn "  does not return secrets). Rotate via the Zitadel console:"
+        warn "  CDCF Org → Projects → CDCF Website → Apps → CDCF Website → Regenerate Client Secret"
+    fi
+    echo "AUTH_ZITADEL_ISSUER=$ZITADEL_ISSUER"
+    echo "# Registered redirect URIs:"
+    for url in "${all_origins[@]}"; do echo "#   $url$CDCF_FRONTEND_CALLBACK_PATH"; done
+    echo "# Registered post-logout URIs:"
+    for url in "${all_origins[@]}"; do echo "#   $url"; done
+    echo "# devMode=true (permits http://localhost dev callback)"
     echo
 }
 
@@ -522,6 +628,7 @@ for action in "${ACTIONS[@]}"; do
         create-org)                 do_create_org ;;
         provision-litcal)           do_provision_litcal ;;
         provision-litcal-frontend)  do_provision_litcal_frontend ;;
+        provision-cdcf-website)     do_provision_cdcf_website ;;
     esac
 done
 
