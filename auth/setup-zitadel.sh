@@ -445,6 +445,15 @@ JSON
     # returns it inside oidcConfiguration on create; never retrievable later.
     local client_secret
     client_secret=$(echo "$result" | jq -r '.oidcConfiguration.clientSecret // .clientSecret // empty')
+    # Fail fast if a confidential client was created without a secret —
+    # otherwise the empty-secret on stdout is indistinguishable from the
+    # "already exists" branch, and the caller silently loses the one-time
+    # secret (Zitadel won't return it again on subsequent reads).
+    if [[ "$auth_method_type" != "OIDC_AUTH_METHOD_TYPE_NONE" && -z "$client_secret" ]]; then
+        err "Created confidential app $name ($app_id) but response had no client_secret."
+        err "The secret cannot be recovered. Delete the app via the Zitadel console and re-run."
+        exit 10
+    fi
     ok "Created OIDC Web app: $name ($app_id, client_id=$client_id)"
     echo "$app_id|$client_id|$client_secret"
 }
@@ -518,19 +527,69 @@ do_provision_litcal_frontend() {
 
 CDCF_PROJECT_NAME="CDCF Website"
 CDCF_APP_NAME="CDCF Website"
+CDCF_APP_NAME_NONPROD="CDCF Website (Non-Prod)"
 CDCF_ROLES=("team_member:Team Member (bio self-edit)" \
             "editor:Editor" \
             "admin:System Administrator")
 
-# Public origins served by the Next.js frontend. Used to register OIDC
-# callback + post-logout URIs on the Web app.
+# Production origins (HTTPS only, devMode=false). Get their own confidential
+# client + client_secret so production credentials are never shared with
+# staging or localhost dev environments.
 CDCF_FRONTEND_URLS=(
     "https://catholicdigitalcommons.org"
-    "https://staging.catholicdigitalcommons.org"
 )
-# Dev callback (localhost over HTTP) — requires devMode=true on the app.
-CDCF_FRONTEND_DEV_URL="http://localhost:3000"
+# Non-production origins (staging + localhost dev). Share a separate
+# confidential client (devMode=true permits the HTTP localhost callback).
+CDCF_FRONTEND_NONPROD_URLS=(
+    "https://staging.catholicdigitalcommons.org"
+    "http://localhost:3000"
+)
 CDCF_FRONTEND_CALLBACK_PATH="/api/auth/callback/zitadel"
+
+# Create one CDCF Website OIDC app and emit its handoff block. Internal
+# helper for do_provision_cdcf_website — runs the create + stdout
+# formatting for either the prod or non-prod app.
+#
+# Args:
+#   $1 project_id
+#   $2 app_name        e.g. "CDCF Website" or "CDCF Website (Non-Prod)"
+#   $3 dev_mode        "true" | "false"
+#   $4 label           handoff section label, e.g. "Production" / "Non-Production"
+#   $5..  origin URLs  one per arg
+_emit_cdcf_app() {
+    local project_id="$1" app_name="$2" dev_mode="$3" label="$4"
+    shift 4
+    local origins=("$@")
+
+    local redirect_uris_json post_logout_uris_json
+    redirect_uris_json=$(printf '%s\n' "${origins[@]}" \
+        | jq -R --arg cb "$CDCF_FRONTEND_CALLBACK_PATH" '. + $cb' | jq -s '.')
+    post_logout_uris_json=$(printf '%s\n' "${origins[@]}" | jq -R '.' | jq -s '.')
+
+    # Confidential client with client_secret_post (Auth.js v5 server-side).
+    local app_info app_id client_id client_secret
+    app_info=$(create_oidc_web_app "$project_id" "$app_name" \
+        "$redirect_uris_json" "$post_logout_uris_json" \
+        "OIDC_AUTH_METHOD_TYPE_POST" "$dev_mode")
+    IFS='|' read -r app_id client_id client_secret <<<"$app_info"
+
+    echo
+    echo "${B}=== CDCF Website handoff values — $label ===${N}"
+    echo "ZITADEL_APP_ID=$app_id"
+    echo "AUTH_ZITADEL_ID=$client_id          # ← client_id"
+    if [[ -n "$client_secret" ]]; then
+        echo "AUTH_ZITADEL_SECRET=$client_secret   # ← client_secret (one-time emit)"
+    else
+        warn "Client secret not emitted (app already existed; ListApplications"
+        warn "  does not return secrets). Rotate via the Zitadel console:"
+        warn "  CDCF Org → Projects → CDCF Website → Apps → $app_name → Regenerate Client Secret"
+    fi
+    echo "# Registered redirect URIs:"
+    for url in "${origins[@]}"; do echo "#   $url$CDCF_FRONTEND_CALLBACK_PATH"; done
+    echo "# Registered post-logout URIs:"
+    for url in "${origins[@]}"; do echo "#   $url"; done
+    echo "# devMode=$dev_mode"
+}
 
 do_provision_cdcf_website() {
     log "Provisioning CDCF Website"
@@ -547,41 +606,17 @@ do_provision_cdcf_website() {
 
     create_roles "$project_id" "${CDCF_ROLES[@]}"
 
-    # Build redirect + post-logout URI arrays (prod + staging + localhost dev).
-    local all_origins=("${CDCF_FRONTEND_URLS[@]}" "$CDCF_FRONTEND_DEV_URL")
-    local redirect_uris_json post_logout_uris_json
-    redirect_uris_json=$(printf '%s\n' "${all_origins[@]}" \
-        | jq -R --arg cb "$CDCF_FRONTEND_CALLBACK_PATH" '. + $cb' | jq -s '.')
-    post_logout_uris_json=$(printf '%s\n' "${all_origins[@]}" | jq -R '.' | jq -s '.')
-
-    # Confidential client with client_secret_post (Auth.js v5 server-side).
-    # devMode=true to permit the http://localhost dev callback.
-    local app_info app_id client_id client_secret
-    app_info=$(create_oidc_web_app "$project_id" "$CDCF_APP_NAME" \
-        "$redirect_uris_json" "$post_logout_uris_json" \
-        "OIDC_AUTH_METHOD_TYPE_POST" "true")
-    IFS='|' read -r app_id client_id client_secret <<<"$app_info"
-
     echo
-    echo "${B}=== CDCF Website handoff values ===${N}"
+    echo "${B}=== CDCF Website shared values ===${N}"
     echo "ZITADEL_ISSUER=$ZITADEL_ISSUER"
+    echo "AUTH_ZITADEL_ISSUER=$ZITADEL_ISSUER"
     echo "ZITADEL_ORG_ID=$org_id"
     echo "ZITADEL_PROJECT_ID=$project_id"
-    echo "ZITADEL_APP_ID=$app_id"
-    echo "AUTH_ZITADEL_ID=$client_id          # ← client_id"
-    if [[ -n "$client_secret" ]]; then
-        echo "AUTH_ZITADEL_SECRET=$client_secret   # ← client_secret (one-time emit)"
-    else
-        warn "Client secret not emitted (app already existed; ListApplications"
-        warn "  does not return secrets). Rotate via the Zitadel console:"
-        warn "  CDCF Org → Projects → CDCF Website → Apps → CDCF Website → Regenerate Client Secret"
-    fi
-    echo "AUTH_ZITADEL_ISSUER=$ZITADEL_ISSUER"
-    echo "# Registered redirect URIs:"
-    for url in "${all_origins[@]}"; do echo "#   $url$CDCF_FRONTEND_CALLBACK_PATH"; done
-    echo "# Registered post-logout URIs:"
-    for url in "${all_origins[@]}"; do echo "#   $url"; done
-    echo "# devMode=true (permits http://localhost dev callback)"
+
+    _emit_cdcf_app "$project_id" "$CDCF_APP_NAME" "false" "Production" \
+        "${CDCF_FRONTEND_URLS[@]}"
+    _emit_cdcf_app "$project_id" "$CDCF_APP_NAME_NONPROD" "true" "Non-Production (staging + localhost)" \
+        "${CDCF_FRONTEND_NONPROD_URLS[@]}"
     echo
 }
 

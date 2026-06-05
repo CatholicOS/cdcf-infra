@@ -12,21 +12,21 @@ This handoff records only the **non-secret** values needed to point the cdcf-web
 - **Project name**: `CDCF Website`
 - **Project ID**: `<populated on first run>`
 - **`projectRoleAssertion`**: `true` (role claims appear in tokens via `urn:zitadel:iam:org:project:roles`)
-- **OIDC Web app** (used by the Next.js frontend via Auth.js v5 server-side flow):
-  - Name: `CDCF Website`
-  - App ID: `<populated on first run>`
-  - **Client ID** (use as `AUTH_ZITADEL_ID` in the frontend's env): `<populated on first run>`
-  - Auth method: `OIDC_AUTH_METHOD_TYPE_POST` — confidential client, `client_secret_post`
-  - **Client secret**: out-of-band (see below)
-  - `devMode`: `true` (permits the `http://localhost:3000` dev callback)
-  - Registered redirect URIs:
-    - `https://catholicdigitalcommons.org/api/auth/callback/zitadel`
-    - `https://staging.catholicdigitalcommons.org/api/auth/callback/zitadel`
-    - `http://localhost:3000/api/auth/callback/zitadel`
-  - Registered post-logout URIs:
-    - `https://catholicdigitalcommons.org`
-    - `https://staging.catholicdigitalcommons.org`
-    - `http://localhost:3000`
+- **OIDC Web apps** — two confidential clients (prod credentials never share a `client_secret` with staging/localhost):
+  - **Production** — Name: `CDCF Website`, App ID / Client ID / Client secret: `<populated on first run>`
+    - Auth method: `OIDC_AUTH_METHOD_TYPE_POST` — confidential client, `client_secret_post`
+    - `devMode`: `false` (HTTPS only)
+    - Redirect URI: `https://catholicdigitalcommons.org/api/auth/callback/zitadel`
+    - Post-logout URI: `https://catholicdigitalcommons.org`
+  - **Non-Production** (staging + localhost dev) — Name: `CDCF Website (Non-Prod)`, App ID / Client ID / Client secret: `<populated on first run — distinct from prod>`
+    - Auth method: `OIDC_AUTH_METHOD_TYPE_POST` — confidential client, `client_secret_post`
+    - `devMode`: `true` (permits the `http://localhost:3000` HTTP dev callback)
+    - Redirect URIs:
+      - `https://staging.catholicdigitalcommons.org/api/auth/callback/zitadel`
+      - `http://localhost:3000/api/auth/callback/zitadel`
+    - Post-logout URIs:
+      - `https://staging.catholicdigitalcommons.org`
+      - `http://localhost:3000`
 - **Roles defined** (on the CDCF Website Project):
   - `team_member` — Team Member (bio self-edit)
   - `editor` — Editor
@@ -34,29 +34,30 @@ This handoff records only the **non-secret** values needed to point the cdcf-web
 
 ## Out-of-band (delivered separately, not in this repo)
 
-- **OIDC client secret** (`AUTH_ZITADEL_SECRET`) — emitted ONCE by `setup-zitadel.sh` at app-creation time. The provisioner cannot retrieve it on subsequent runs (Zitadel's `ListApplications` API doesn't return secrets). If the secret is lost:
-  - Rotate via the Zitadel console: `CDCF` Org → Projects → `CDCF Website` → Apps → `CDCF Website` → Regenerate Client Secret.
+- **OIDC client secrets** (`AUTH_ZITADEL_SECRET`) — emitted ONCE per app by `setup-zitadel.sh` at app-creation time (two secrets total: one for the prod client, one for the non-prod client). The provisioner cannot retrieve them on subsequent runs (Zitadel's `ListApplications` API doesn't return secrets). If a secret is lost:
+  - Rotate via the Zitadel console: `CDCF` Org → Projects → `CDCF Website` → Apps → `CDCF Website` (or `CDCF Website (Non-Prod)`) → Regenerate Client Secret.
 - **`AUTH_SECRET`** — Auth.js v5 session encryption key. Generate per-environment with `openssl rand -base64 32`. Different value per env; never shared between prod/staging/dev.
 
 ## Recommended env vars per repo
 
-**`cdcf-website`** — Next.js frontend (Auth.js v5):
+**`cdcf-website`** — Next.js frontend (Auth.js v5). Use the **Production** client_id/secret on the prod deploy and the **Non-Production** client_id/secret on staging + local dev:
 
 ```bash
 AUTH_ZITADEL_ISSUER=https://auth.catholicdigitalcommons.org
-AUTH_ZITADEL_ID=<client_id>                # ← from this handoff
-AUTH_ZITADEL_SECRET=<client_secret>        # ← out-of-band
+AUTH_ZITADEL_ID=<client_id>                # ← prod app on prod, non-prod app on staging/dev
+AUTH_ZITADEL_SECRET=<client_secret>        # ← out-of-band, matched to AUTH_ZITADEL_ID
 AUTH_SECRET=<openssl rand -base64 32>      # ← per-env
 ```
 
 **`cdcf-website`** — WordPress backend (`wp-config.php`):
 
-The bearer-token validator in `wordpress/themes/cdcf-headless/includes/auth/zitadel-bearer.php` (introduced in cdcf-website PR #172) hardcodes the issuer URL, but it requires the **CDCF Website client ID** at the WP layer to verify bearer tokens were actually minted for cdcf-website — without this check, a token validly issued for a sibling umbrella property (LitCal / OntoKit / BibleGet) would otherwise pass the email-based WP user lookup, because the umbrella uses `UserEmailAsUsername=true` (login names = emails globally). Add to `wp-config.php` on prod + staging:
+The bearer-token validator in `wordpress/themes/cdcf-headless/includes/auth/zitadel-bearer.php` (introduced in cdcf-website PR #172) hardcodes the issuer URL, but it requires the **CDCF Website client ID** at the WP layer to verify bearer tokens were actually minted for cdcf-website — without this check, a token validly issued for a sibling umbrella property (LitCal / OntoKit / BibleGet) would otherwise pass the email-based WP user lookup, because the umbrella uses `UserEmailAsUsername=true` (login names = emails globally). Add to `wp-config.php` on each environment using its own `client_id` (prod app on prod WP, non-prod app on staging WP):
 
 ```php
 // Audience pin for /cdcf/v1 bearer-token validation. Without this,
 // CDCF_ZITADEL_EXPECTED_AUD defaults to '' and EVERY bearer token is
-// rejected (safe fail-closed default). Value = AUTH_ZITADEL_ID above.
+// rejected (safe fail-closed default). Value = AUTH_ZITADEL_ID above
+// (prod client_id on prod, non-prod client_id on staging).
 define('CDCF_ZITADEL_EXPECTED_AUD', '<client_id>');
 ```
 
