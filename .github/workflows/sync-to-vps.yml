@@ -1,0 +1,103 @@
+name: Sync to VPS
+
+# Pulls the latest main into the on-VPS clone of cdcf-infra so the live
+# scripts (setup-zitadel.sh, setup-openfga.sh, docker-compose.prod.yml,
+# backup/pg-dump.sh, models/) match the merged state of this repo without
+# requiring an operator ssh+pull on every merge.
+#
+# Scope is intentionally narrow: pull only. No `docker compose up`,
+# no script auto-runs. Compose-file changes still need a manual restart;
+# role-catalog or setup-script changes still need a manual --provision-*
+# invocation. The justification is risk surface: auto-restarting Zitadel
+# briefly takes auth offline for the entire umbrella; auto-running
+# setup-zitadel.sh would let a bad merge write to Zitadel's API. Both
+# are kept operator-initiated for now and re-evaluated separately.
+#
+# Auth: a dedicated VPS user (provisioned by
+# scripts/setup-vps-sync-user.sh) owns the repo dir and can git pull
+# there, but has no sudo and no shell access elsewhere. The private SSH
+# key is in repo secrets; the public key in the dedicated user's
+# authorized_keys on the VPS.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'auth/**'
+      - '.github/workflows/sync-to-vps.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize syncs so two simultaneous pushes don't try to git-pull
+# the same working tree at once. cancel-in-progress: false lets the
+# second wait rather than racing.
+concurrency:
+  group: sync-cdcf-infra-vps
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH key
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
+        run: |
+          if [ -z "$VPS_SSH_KEY" ] || [ -z "$VPS_HOST_KEY" ]; then
+            echo "ERROR: secrets.VPS_SSH_KEY or vars.VPS_HOST_KEY is empty."
+            echo "See auth/README.md → 'GitHub Actions sync workflow' for setup."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pinned host key — must match the VPS's ssh-keyscan output.
+          echo "$VPS_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Sanity-check pinned host key against DNS SSHFP records
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          # Defensive: fail-fast if the pinned host key in
+          # vars.VPS_HOST_KEY doesn't match what's actually being served
+          # right now (catches rotation drift before we try to SSH).
+          # ssh-keyscan is unauthenticated — the DNS SSHFP check is the
+          # canonical trust anchor.
+          if ! ssh-keygen -F "$VPS_HOST" -f ~/.ssh/known_hosts >/dev/null; then
+            echo "ERROR: vars.VPS_HOST_KEY does not contain a key for the target host."
+            exit 1
+          fi
+
+      - name: Fast-forward git pull on VPS
+        env:
+          VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          REPO_DIR: ${{ vars.CDCF_INFRA_REPO_DIR }}
+        run: |
+          if [ -z "$VPS_USERNAME" ] || [ -z "$VPS_HOST" ] || [ -z "$REPO_DIR" ]; then
+            echo "ERROR: VPS_USERNAME / VPS_HOST / CDCF_INFRA_REPO_DIR is empty."
+            exit 1
+          fi
+          # --ff-only refuses to merge if local changes block fast-forward.
+          # The dedicated VPS user has no shell access, so accumulating
+          # local commits shouldn't happen — but if it does, this fails
+          # loudly rather than silently merging.
+          for attempt in 1 2 3; do
+            echo "Pull attempt $attempt..."
+            if ssh -i ~/.ssh/deploy_key \
+              -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 \
+              "${VPS_USERNAME}@${VPS_HOST}" \
+              "git -C \"$REPO_DIR\" pull --ff-only origin main"; then
+              echo "Pull succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "Pull failed on attempt $attempt"
+            [ "$attempt" -lt 3 ] && echo "Waiting 15 seconds before retry..." && sleep 15
+          done
+          echo "All pull attempts failed"
+          exit 1
