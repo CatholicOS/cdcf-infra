@@ -163,6 +163,34 @@ The Zitadel masterkey and `.env.production` are NOT in pg_dump output — back t
 
 Restoring Zitadel requires both the pg_dump AND the original `ZITADEL_MASTERKEY`. The masterkey decrypts secrets in the dump; without it the dump is unrecoverable. **This is the single most important secret to preserve out-of-band.**
 
+## GitHub Actions sync workflow
+
+`.github/workflows/sync-to-vps.yml` pulls the latest `main` into the on-VPS clone whenever `auth/**` changes (push to `main`) or when manually dispatched. Scope is intentionally narrow: **pull only** — no `docker compose up`, no script auto-runs. Compose-file changes still need a manual restart; role-catalog or setup-script changes still need a manual `--provision-*` invocation.
+
+### One-time VPS provisioning
+
+Run as root on the VPS:
+
+```bash
+sudo /opt/cdcf-auth/scripts/setup-vps-sync-user.sh
+```
+
+This creates a dedicated user (`cdcfinfra-deploy`) with no sudo and no shell access outside the repo dir, transfers ownership of `/opt/cdcf-auth` to that user, and restores `ubuntu:ubuntu` mode `0600` on `.env.production` so the secret stays unreadable to the sync user. The script prints the remaining one-time setup steps for SSH keypair generation, `authorized_keys`, repo secrets, and repo variables.
+
+### Required GitHub repo settings
+
+| Kind | Name | Source |
+|---|---|---|
+| Secret | `VPS_SSH_KEY` | PRIVATE half of the workflow's ed25519 keypair |
+| Secret | `VPS_USERNAME` | `cdcfinfra-deploy` |
+| Secret | `VPS_HOST` | hostname/IP of the VPS the runner SSHes to |
+| Variable | `VPS_HOST_KEY` | output of `ssh-keyscan -t ed25519,rsa <host>` |
+| Variable | `CDCF_INFRA_REPO_DIR` | `/opt/cdcf-auth` |
+
+### Trust model
+
+The dedicated user is the principle-of-least-privilege boundary. Even if `VPS_SSH_KEY` leaks, the blast radius is "can fast-forward git pull `/opt/cdcf-auth`" — not arbitrary code execution as the operator account. The `.env.production` secret stays owned by `ubuntu` mode `0600`, so the sync user cannot read it. The workflow uses `--ff-only` so any unexpected local commit on the VPS fails the pull loudly rather than silently merging.
+
 ## Adding a new consumer property
 
 1. Decide whether the property gets its own Zitadel Org (per-property isolation, default) or fits under an existing Org.
