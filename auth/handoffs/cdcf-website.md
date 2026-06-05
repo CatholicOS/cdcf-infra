@@ -49,17 +49,27 @@ AUTH_ZITADEL_SECRET=<client_secret>        # ← out-of-band, matched to AUTH_ZI
 AUTH_SECRET=<openssl rand -base64 32>      # ← per-env
 ```
 
-**`cdcf-website`** — WordPress backend (`wp-config.php`):
+**`cdcf-website`** — WordPress backend (`wp-config.php`) — single shared WP serves both prod and staging frontends:
 
-The bearer-token validator in `wordpress/themes/cdcf-headless/includes/auth/zitadel-bearer.php` (introduced in cdcf-website PR #172) hardcodes the issuer URL, but it requires the **CDCF Website client ID** at the WP layer to verify bearer tokens were actually minted for cdcf-website — without this check, a token validly issued for a sibling umbrella property (LitCal / OntoKit / BibleGet) would otherwise pass the email-based WP user lookup, because the umbrella uses `UserEmailAsUsername=true` (login names = emails globally). Add to `wp-config.php` on each environment using its own `client_id` (prod app on prod WP, non-prod app on staging WP):
+The bearer-token validator in `wordpress/themes/cdcf-headless/includes/auth/zitadel-bearer.php` (introduced in cdcf-website PR #172) hardcodes the issuer URL, but it requires the **CDCF Website client ID** at the WP layer to verify bearer tokens were actually minted for cdcf-website — without this check, a token validly issued for a sibling umbrella property (LitCal / OntoKit / BibleGet) would otherwise pass the email-based WP user lookup, because the umbrella uses `UserEmailAsUsername=true` (login names = emails globally).
+
+Because the shared WP backend must accept tokens minted by **either** the prod Next.js client or the non-prod (staging+localhost) Next.js client, `CDCF_ZITADEL_EXPECTED_AUD` is a comma-separated list of accepted `client_id` values, and the validator checks set membership (token `aud` ∈ allowed list) rather than equality. Add to `wp-config.php` on the shared WP:
 
 ```php
-// Audience pin for /cdcf/v1 bearer-token validation. Without this,
-// CDCF_ZITADEL_EXPECTED_AUD defaults to '' and EVERY bearer token is
-// rejected (safe fail-closed default). Value = AUTH_ZITADEL_ID above
-// (prod client_id on prod, non-prod client_id on staging).
-define('CDCF_ZITADEL_EXPECTED_AUD', '<client_id>');
+// Audience allow-list for /cdcf/v1 bearer-token validation.
+// Comma-separated client_ids of every cdcf-website Next.js frontend that
+// may legitimately call this WP backend (prod + non-prod today; append
+// more if a further frontend env is ever added). Default '' fails closed.
+define(
+  'CDCF_ZITADEL_EXPECTED_AUD',
+  '<prod_client_id>,<nonprod_client_id>'
+);
 ```
+
+Validator requirements (cdcf-website-side, see plan in cdcf-website issue/PR — *not* in cdcf-infra):
+- Split the constant on `,`, trim whitespace, drop empty entries.
+- Accept the token if its `aud` claim — which may be a string OR a JSON array per RFC 7519 §4.1.3 — has any element in common with the allow-list.
+- Continue to fail closed if the constant is unset/empty.
 
 The Python CLI (`scripts/cdcf_api.py`) continues to use Application Password auth — it has no Zitadel access token to present.
 
