@@ -40,19 +40,27 @@ This handoff records only the **non-secret** values needed to point the cdcf-web
 
 ## Recommended env vars per repo
 
-**`cdcf-website`** (Next.js frontend + WordPress backend — Auth.js v5 + bearer-token validation):
+**`cdcf-website`** — Next.js frontend (Auth.js v5):
 
 ```bash
-# Auth.js (Next.js)
 AUTH_ZITADEL_ISSUER=https://auth.catholicdigitalcommons.org
 AUTH_ZITADEL_ID=<client_id>                # ← from this handoff
 AUTH_ZITADEL_SECRET=<client_secret>        # ← out-of-band
 AUTH_SECRET=<openssl rand -base64 32>      # ← per-env
-
-# (no ZITADEL_* env vars needed on the WordPress side — the bearer
-#  validator only needs the issuer URL, and that's hardcoded against
-#  catholicdigitalcommons.org in the theme's auth/zitadel-bearer.php)
 ```
+
+**`cdcf-website`** — WordPress backend (`wp-config.php`):
+
+The bearer-token validator in `wordpress/themes/cdcf-headless/includes/auth/zitadel-bearer.php` (introduced in cdcf-website PR #172) hardcodes the issuer URL, but it requires the **CDCF Website client ID** at the WP layer to verify bearer tokens were actually minted for cdcf-website — without this check, a token validly issued for a sibling umbrella property (LitCal / OntoKit / BibleGet) would otherwise pass the email-based WP user lookup, because the umbrella uses `UserEmailAsUsername=true` (login names = emails globally). Add to `wp-config.php` on prod + staging:
+
+```php
+// Audience pin for /cdcf/v1 bearer-token validation. Without this,
+// CDCF_ZITADEL_EXPECTED_AUD defaults to '' and EVERY bearer token is
+// rejected (safe fail-closed default). Value = AUTH_ZITADEL_ID above.
+define('CDCF_ZITADEL_EXPECTED_AUD', '<client_id>');
+```
+
+The Python CLI (`scripts/cdcf_api.py`) continues to use Application Password auth — it has no Zitadel access token to present.
 
 ## What's NOT provisioned here (Phase 2 follow-ups for issue #2)
 
