@@ -12,13 +12,13 @@ This handoff records only the **non-secret** values needed to point the cdcf-web
 - **Project name**: `CDCF Website`
 - **Project ID**: `<populated on first run>`
 - **`projectRoleAssertion`**: `true` (role claims appear in tokens via `urn:zitadel:iam:org:project:roles`)
-- **OIDC Web apps** — two confidential clients (prod credentials never share a `client_secret` with staging/localhost):
-  - **Production** — Name: `CDCF Website`, App ID / Client ID / Client secret: `<populated on first run>`
+- **OIDC Web apps** — two confidential clients (prod credentials never share a `client_secret` with staging/localhost). The `client_secret` for each app is delivered out-of-band (see "Out-of-band" below) and **must never be committed to this file**:
+  - **Production** — Name: `CDCF Website`, App ID / Client ID: `<populated on first run>`
     - Auth method: `OIDC_AUTH_METHOD_TYPE_POST` — confidential client, `client_secret_post`
     - `devMode`: `false` (HTTPS only)
     - Redirect URI: `https://catholicdigitalcommons.org/api/auth/callback/zitadel`
     - Post-logout URI: `https://catholicdigitalcommons.org`
-  - **Non-Production** (staging + localhost dev) — Name: `CDCF Website (Non-Prod)`, App ID / Client ID / Client secret: `<populated on first run — distinct from prod>`
+  - **Non-Production** (staging + localhost dev) — Name: `CDCF Website (Non-Prod)`, App ID / Client ID: `<populated on first run — distinct from prod>`
     - Auth method: `OIDC_AUTH_METHOD_TYPE_POST` — confidential client, `client_secret_post`
     - `devMode`: `true` (permits the `http://localhost:3000` HTTP dev callback)
     - Redirect URIs:
