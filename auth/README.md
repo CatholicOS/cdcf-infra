@@ -29,7 +29,7 @@ Plesk's Docker extension picks up `docker-compose.prod.yml` at the path above vi
 - **Login names = email addresses** (instance-wide). `UserLoginMustBeDomain=false` + `UserEmailAsUsername=true` in the default domain policy — so users log in with their email, globally unique across the instance. No `<username>@<org>.<external-domain>` legacy suffix. Machine users (e.g. `automation`, `login-client`) still use machine names since they don't have emails.
 - **Shared OpenFGA**, with its own database on the host Postgres.
 - **Host Postgres only** — no containerized DBs. One Postgres instance to back up, patch, monitor.
-- Phase 1 consumer: LiturgicalCalendarAPI. Other Orgs are pre-provisioned stubs.
+- Phase 1 consumers: LiturgicalCalendarAPI + CDCF Website (`cdcf-website` issue [#2](https://github.com/CatholicOS/cdcf-website/issues/2) — team-member bio self-edit). BibleGet and OntoKit Orgs remain pre-provisioned stubs.
 - See the open-question Discussion: <https://github.com/CatholicOS/cdcf-website/discussions/98>.
 
 ## Prerequisites
@@ -129,13 +129,14 @@ curl -s http://127.0.0.1:8081/healthz       # OpenFGA → 200
 # 6. Two PAT files land in /opt/cdcf-auth/runtime/zitadel-data/ after first boot:
 #      automation-user.pat  - IAM_OWNER, used by setup-zitadel.sh and our own admin scripts
 #      login-client.pat     - IAM_LOGIN_CLIENT, consumed by the zitadel-login container
-#    Run the bootstrap scripts (--all does rename-bootstrap-admin + create-orgs + provision-litcal):
+#    Run the bootstrap scripts (--all does rename-bootstrap-admin + create-orgs
+#    + provision-litcal + provision-litcal-frontend + provision-cdcf-website):
 cd /opt/cdcf-auth/auth
 ./setup-zitadel.sh   --target production --all
 ./setup-openfga.sh   --target production --create-litcal-store
 ```
 
-The Zitadel script prints handoff values for LiturgicalCalendar at the end (issuer, org ID, project ID, API client ID). The OpenFGA script prints store ID + model ID. Use those values to write `handoffs/liturgicalcalendar.md` per the template in `handoffs/README.md`.
+The Zitadel script prints handoff values per property at the end (issuer, org ID, project ID, app/client IDs, and — for confidential clients like CDCF — the **one-time client secret**). The OpenFGA script prints store ID + model ID. Use those values to write `handoffs/<property>.md` per the template in `handoffs/README.md`. **The CDCF client secret is unrecoverable** once the run finishes — capture it from the script output and store it in the consumer repo's deploy env at the moment of first provisioning.
 
 ## Plesk-side setup
 
