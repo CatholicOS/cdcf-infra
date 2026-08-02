@@ -221,20 +221,25 @@ The API issues `POST /stores/<id>/check` with `{"tuple_key": {"user": "user:<zit
 | `can_edit` | `PUT` / `PATCH` / `DELETE` on elogia, and on month/day data |
 | `can_admin` | `PUT /{edition_id}` (create edition) and `PATCH /{edition_id}` (edition metadata) |
 
-### ⚠ Discrepancy to resolve — stated intent vs. enforced behaviour
+### The write split is by resource, not by HTTP verb — confirmed intended
 
-The owner's stated intent for the write split was:
+`routers/curation.py` divides content from container rather than dividing verbs:
 
-> editor = `PATCH`; admin = `PUT` / `PATCH` / `DELETE`
+- **`can_edit` — content.** `PUT`, `PATCH` and `DELETE` on elogia, plus month/day
+  data. An editor may delete an individual elogium.
+- **`can_admin` — the container.** `PUT /{edition_id}` (create an edition) and
+  `PATCH /{edition_id}` (edition metadata).
 
-The code (`routers/curation.py`) does **not** split by HTTP verb. It splits by **resource**:
+An earlier reading of the policy expected a verb-based split (editor = `PATCH`,
+admin = `PUT`/`PATCH`/`DELETE`). The owner confirmed the resource-based split is
+what is wanted: an editor can delete an elogium, but not an entire edition.
 
-- `can_edit` covers `PUT`, `PATCH` **and `DELETE`** — on elogia and on month/day data. An editor can delete content.
-- `can_admin` covers edition **lifecycle** — `PUT /{edition_id}` (create an edition) and `PATCH /{edition_id}` (edition metadata) — regardless of verb.
-
-So an editor today has `DELETE` on elogia, which the verb-based reading would have reserved to admin; and admin's distinguishing power is edition lifecycle rather than the `PUT`/`DELETE` verbs generally.
-
-**This is recorded, not resolved.** Neither the API nor this model was changed to paper over it: the model grants `can_edit`/`can_admin` exactly as the API already interprets them, so today's behaviour is preserved either way. The owner should decide which of the two is the intended policy. If the verb-based split is what's wanted, that is an API change in `martyrology-api` (`routers/curation.py`), not a change to this model or to the tuples.
+That distinction is stronger than it looks, because **the API exposes no route
+that deletes an edition at all** — there is no `DELETE /{edition_id}`. Edition
+removal is not an authorization decision here; it is simply not reachable
+through the API, and would have to be done in the data repository directly. So
+`can_admin` is best read as "may create an edition and edit its metadata",
+not as "may destroy one".
 
 ## What's NOT provisioned here (follow-ups)
 
