@@ -91,7 +91,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --target)                    TARGET="$2"; shift 2 ;;
         --create-orgs)               ACTIONS+=("create-orgs"); shift ;;
-        --create-org)                [[ $# -ge 2 ]] || usage; ACTIONS+=("create-org:$2"); shift 2 ;;
+        # NAME must be present, non-empty and not itself an option: without the
+        # last check `--create-org --provision-litcal` would swallow the action
+        # and create an Org literally named "--provision-litcal".
+        --create-org)                [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || usage; ACTIONS+=("create-org:$2"); shift 2 ;;
         --provision-litcal)          ACTIONS+=("provision-litcal"); shift ;;
         --provision-litcal-frontend) ACTIONS+=("provision-litcal-frontend"); shift ;;
         --provision-cdcf-website)    ACTIONS+=("provision-cdcf-website"); shift ;;
