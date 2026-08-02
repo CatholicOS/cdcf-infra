@@ -86,7 +86,7 @@ Provisioned 2026-08-02 against production.
 - **OIDC API app** (used by the FastAPI backend to validate incoming bearer tokens):
   - Name: `MartyrologyAPI Backend`
   - App ID: `384518610325864451`
-  - **Client ID** (→ `MARTYROLOGY_ZITADEL_CLIENT_ID`): `<populated on first run>`
+  - **Client ID** (→ `MARTYROLOGY_ZITADEL_CLIENT_ID`): `384518610325929987`
   - Auth method: `API_AUTH_METHOD_TYPE_BASIC` — confidential client with a `client_secret`
   - **Client secret**: **out-of-band** (one-time emit — see Warning 1). Never committed to this file.
 - **Roles defined**: **none, deliberately.**
@@ -241,7 +241,7 @@ curl -sS -X POST "${OPENFGA_INTERNAL_URL}/stores/${MARTYROLOGY_STORE_ID}/check" 
 
 ```bash
 MARTYROLOGY_ZITADEL_ISSUER=https://auth.catholicdigitalcommons.org
-MARTYROLOGY_ZITADEL_CLIENT_ID=<populated on first run>
+MARTYROLOGY_ZITADEL_CLIENT_ID=384518610325929987
 MARTYROLOGY_ZITADEL_CLIENT_SECRET=<out-of-band — one-time emit, see Warning 1>
 
 MARTYROLOGY_OPENFGA_API_URL=https://authz.catholicdigitalcommons.org
