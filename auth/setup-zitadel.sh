@@ -59,7 +59,10 @@ set -euo pipefail
 
 TARGET=""
 ACTIONS=()
-SINGLE_ORG=""
+# Org names ride inside each ACTIONS entry ("create-org:NAME") rather than in a
+# shared scalar: with one SINGLE_ORG, a second --create-org overwrote the first,
+# so `--create-org A --create-org B` created B twice and silently dropped A.
+# Same defect that was fixed for --create-store in setup-openfga.sh.
 
 usage() {
     cat >&2 <<EOF
@@ -88,7 +91,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --target)                    TARGET="$2"; shift 2 ;;
         --create-orgs)               ACTIONS+=("create-orgs"); shift ;;
-        --create-org)                ACTIONS+=("create-org"); SINGLE_ORG="$2"; shift 2 ;;
+        --create-org)                [[ $# -ge 2 ]] || usage; ACTIONS+=("create-org:$2"); shift 2 ;;
         --provision-litcal)          ACTIONS+=("provision-litcal"); shift ;;
         --provision-litcal-frontend) ACTIONS+=("provision-litcal-frontend"); shift ;;
         --provision-cdcf-website)    ACTIONS+=("provision-cdcf-website"); shift ;;
@@ -215,8 +218,9 @@ do_create_orgs() {
 }
 
 do_create_org() {
-    log "Provisioning single Org: $SINGLE_ORG"
-    create_org "$SINGLE_ORG" >/dev/null
+    local name="$1"
+    log "Provisioning single Org: $name"
+    create_org "$name" >/dev/null
 }
 
 do_rename_bootstrap_admin() {
@@ -783,10 +787,10 @@ do_provision_martyrology() {
 log "Target: $TARGET (issuer: $ZITADEL_ISSUER, internal: $ZITADEL_INTERNAL_URL)"
 
 for action in "${ACTIONS[@]}"; do
-    case "$action" in
+    case "${action%%:*}" in
         rename-bootstrap-admin)     do_rename_bootstrap_admin ;;
         create-orgs)                do_create_orgs ;;
-        create-org)                 do_create_org ;;
+        create-org)                 do_create_org "${action#*:}" ;;
         provision-litcal)           do_provision_litcal ;;
         provision-litcal-frontend)  do_provision_litcal_frontend ;;
         provision-cdcf-website)     do_provision_cdcf_website ;;
