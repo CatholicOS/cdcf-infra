@@ -115,8 +115,13 @@ case "$TARGET" in
 esac
 
 [[ ! -f "$ENV_FILE" ]] && { echo "Env file not found: $ENV_FILE" >&2; exit 1; }
+# The directive has to sit immediately above `source` itself. On a compound
+# line it binds to the first command (`set -a`) and never reaches `source`, so
+# SC1090 fired here despite the disable being present.
+set -a
 # shellcheck disable=SC1090
-set -a; source "$ENV_FILE"; set +a
+source "$ENV_FILE"
+set +a
 
 # --- config ---------------------------------------------------------------
 
