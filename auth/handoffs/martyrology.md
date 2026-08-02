@@ -145,41 +145,33 @@ They were published by a **publishing house**, not by the USCCB, so they also fa
 
 ---
 
-## One-time tuple seeding
+## Tuple seeding — automated
 
-`setup-openfga.sh` uploads the **model** but **never writes tuples**. The `governed_by` tuples are structural data the model is useless without — with no tuples, every check returns `false` for everyone, including admins. Run these once, on the VPS, after `--create-martyrology-store`.
-
-These use the same invocation style as the script's `fga()` helper (`curl` against the internal listener, Bearer preshared key). Export the two values first:
+The `governed_by` tuples are structural data the model is useless without: with no tuples, every check returns `false` for everyone, including admins. They are **version-controlled** in `cdcf-infra/auth/models/Martyrology.tuples.json` and applied by `setup-openfga.sh`, which seeds them automatically after the model upload:
 
 ```bash
-export OPENFGA_INTERNAL_URL=http://127.0.0.1:8081
-export OPENFGA_PRESHARED_KEY=<out-of-band>
-export MARTYROLOGY_STORE_ID=<store ID from the --create-martyrology-store output>
+cd /opt/cdcf-auth/auth
+./setup-openfga.sh --target production --create-martyrology-store
 ```
 
-### Seed `governed_by` (all 8 editions, one request)
+```
+    ✓ Uploaded model: <model id>
+[setup-openfga] Seeding structural tuples from .../auth/models/Martyrology.tuples.json
+    ✓ Wrote 8 new structural tuple(s) (8 declared in file)
+```
+
+To re-apply after editing the tuples file — without re-uploading the model:
 
 ```bash
-curl -sS -X POST "${OPENFGA_INTERNAL_URL}/stores/${MARTYROLOGY_STORE_ID}/write" \
-  -H "Authorization: Bearer ${OPENFGA_PRESHARED_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "writes": {
-      "tuple_keys": [
-        {"user":"governance_body:editio_typica","relation":"governed_by","object":"edition:martyrologium_romanum_1584"},
-        {"user":"governance_body:editio_typica","relation":"governed_by","object":"edition:martyrologium_romanum_1749"},
-        {"user":"governance_body:editio_typica","relation":"governed_by","object":"edition:martyrologium_romanum_1914"},
-        {"user":"governance_body:editio_typica","relation":"governed_by","object":"edition:martyrologium_romanum_2001"},
-        {"user":"governance_body:editio_typica","relation":"governed_by","object":"edition:martyrologium_romanum_2004"},
-        {"user":"governance_body:cei","relation":"governed_by","object":"edition:martyrologium_romanum_2004_it_IT"},
-        {"user":"governance_body:unassigned_en_translatio","relation":"governed_by","object":"edition:martyrologium_romanum_1914_en_unofficial"},
-        {"user":"governance_body:unassigned_en_translatio","relation":"governed_by","object":"edition:martyrologium_romanum_2004_en_unofficial"}
-      ]
-    }
-  }'
+./setup-openfga.sh --target production --seed-tuples Martyrology
 ```
 
-A successful write returns `{}`. Re-running is **not** idempotent — OpenFGA rejects a duplicate tuple with `write_failed_due_to_invalid_input`. That is safe (nothing is corrupted); it just means the tuples are already there.
+Properties of the seeding, all relied upon in practice:
+
+- **Idempotent.** OpenFGA rejects a write of a tuple that already exists, and a write is transactional, so one duplicate would fail the whole batch. The script reads the store's existing tuples first (paginating fully) and writes only the difference. A second run reports `All 8 structural tuple(s) already present — nothing to write`.
+- **Fails loudly.** A tuples file that is not valid JSON, has no `.tuples` array, or contains an entry missing `user`/`relation`/`object` aborts with a non-zero exit before anything is written. A silently skipped seed would leave the model inert while the run looked successful, so it is treated as fatal rather than as a warning.
+- **Never deletes.** Tuples in the store that use a relation the file manages (`governed_by`) but are absent from the file are reported as drift and **left in place**. Removing them is a deliberate operator decision, not something this script does. Human role grants are untouched, because `reader`/`editor`/`admin` are not relations the file manages.
+- **Absent file is a no-op** for `--create-store`, so stores without structural tuples (e.g. `LiturgicalCalendar`) are unaffected. For an explicit `--seed-tuples NAME`, a missing file is an error.
 
 ### Verify
 
@@ -190,7 +182,17 @@ curl -sS -X POST "${OPENFGA_INTERNAL_URL}/stores/${MARTYROLOGY_STORE_ID}/read" \
   -d '{"tuple_key":{"relation":"governed_by"}}' | jq '.tuples | length'   # → 8
 ```
 
-### Grant a person a role on a body
+### Grant a person a role on a body — still manual, deliberately
+
+Human role grants are **not** in `Martyrology.tuples.json` and are not seeded by any script. They are per-person operator actions keyed to a Zitadel `sub` that only exists after that individual has signed in once — not version-controlled seed data, and not something that should be reproduced by re-running a provisioning script.
+
+Export the connection values first (same invocation style as the script's `fga()` helper — `curl` against the internal listener, Bearer preshared key):
+
+```bash
+export OPENFGA_INTERNAL_URL=http://127.0.0.1:8081
+export OPENFGA_PRESHARED_KEY=<out-of-band>
+export MARTYROLOGY_STORE_ID=<store ID from the --create-martyrology-store output>
+```
 
 Zitadel's `sub` claim is the user identifier — an opaque numeric string, visible in the Zitadel console under `Martyrology` Org → Users → the user → ID. Grant on the **body**, never on an edition:
 
@@ -271,6 +273,6 @@ not as "may destroy one".
 
 ## What's NOT provisioned here (follow-ups)
 
-- **Tuple seeding is manual.** `setup-openfga.sh` has no tuple-writing capability. Folding the `governed_by` seed into the shared script (e.g. an optional `auth/models/<Store>.tuples.json` applied idempotently after the model upload) is proposed as a follow-up, deliberately out of scope for the onboarding PR.
-- **Governance for the English editions** — see the `unassigned_en_translatio` section above.
-- **Human role grants** — no individual has any role on any body until someone runs the grant command above. Each curator signs in to Zitadel once so a `sub` exists, then gets a tuple.
+- ~~**Tuple seeding is manual.**~~ **Done** — `setup-openfga.sh` now seeds `auth/models/Martyrology.tuples.json` idempotently after the model upload, and `--seed-tuples Martyrology` re-applies it on its own. See "Tuple seeding — automated" above.
+- **Governance for the English editions** — see the `unassigned_en_translatio` section above. Resolving it means editing the `governed_by` entry in `auth/models/Martyrology.tuples.json` and re-running `--seed-tuples Martyrology`; note that re-pointing an edition **adds** the new tuple and reports the old one as drift rather than deleting it, so the stale tuple must be removed explicitly.
+- **Human role grants** — no individual has any role on any body until someone runs the grant command above. Each curator signs in to Zitadel once so a `sub` exists, then gets a tuple. These are deliberately **not** seeded from the tuples file.

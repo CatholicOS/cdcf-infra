@@ -2,26 +2,38 @@
 #
 # setup-openfga.sh — bootstrap and idempotent provisioning for cdcf-infra OpenFGA.
 #
-# Creates a store and uploads its authorization model. Model files live in
-# auth/models/<store-name>.json — the store name is the file basename.
+# Creates a store, uploads its authorization model, and seeds its structural
+# tuples. Model files live in auth/models/<store-name>.json — the store name is
+# the file basename. Optional structural tuples live alongside as
+# auth/models/<store-name>.tuples.json.
 #
 # Actions:
 #   --create-store NAME    Create store NAME if it doesn't exist, then upload
-#                          auth/models/NAME.json as the latest model. Idempotent:
-#                          skips upload if the model already matches what's there.
+#                          auth/models/NAME.json as the latest model, then seed
+#                          auth/models/NAME.tuples.json if that file exists.
+#                          Idempotent: skips upload if the model already matches
+#                          what's there, and writes only tuples not already in
+#                          the store.
 #   --create-litcal-store  Shorthand for `--create-store LiturgicalCalendar`.
 #   --create-martyrology-store
 #                          Shorthand for `--create-store Martyrology`.
+#   --seed-tuples NAME     Seed auth/models/NAME.tuples.json into the existing
+#                          store NAME, without touching the model. Use after
+#                          editing a tuples file. Fails if the store, its model,
+#                          or the tuples file is missing.
 #
-# NOTE: this script uploads the MODEL only — it never writes tuples. The
-# Martyrology model is governance-body-scoped, so it is inert until the
-# `edition → governed_by → governance_body` tuples are seeded. Those commands
-# live in handoffs/martyrology.md and must be run once after store creation.
+# Structural tuples only: a `.tuples.json` file carries wiring the model is
+# useless without (for Martyrology, `edition → governed_by → governance_body`).
+# Human role grants (`user:<sub>` → reader/editor/admin on a governance_body)
+# are NOT seeded here — they are per-person operator actions; see
+# handoffs/martyrology.md. This script never deletes tuples: tuples in the store
+# that are absent from the file are reported as drift and left alone.
 #
 # Usage:
 #   ./setup-openfga.sh --target production --create-litcal-store
 #   ./setup-openfga.sh --target production --create-martyrology-store
 #   ./setup-openfga.sh --target production --create-store LiturgicalCalendar
+#   ./setup-openfga.sh --target production --seed-tuples Martyrology
 #
 # Requires: bash >= 4, curl, jq.
 
@@ -32,6 +44,7 @@ set -euo pipefail
 TARGET=""
 ACTIONS=()
 SINGLE_STORE=""
+SEED_STORE=""
 
 usage() {
     cat >&2 <<EOF
@@ -39,9 +52,12 @@ Usage: $0 --target {local,production} ACTION [ACTION ...]
 
 Actions:
   --create-store NAME       Create store NAME + upload auth/models/NAME.json
+                            + seed auth/models/NAME.tuples.json if present
   --create-litcal-store     Shorthand for --create-store LiturgicalCalendar
   --create-martyrology-store
                             Shorthand for --create-store Martyrology
+  --seed-tuples NAME        Seed auth/models/NAME.tuples.json into the existing
+                            store NAME (no model upload)
 
 Environment variables (sourced from .env.\$target):
   OPENFGA_API_URL           (default: https://authz.catholicdigitalcommons.org)
@@ -57,6 +73,7 @@ while [[ $# -gt 0 ]]; do
         --create-store)         ACTIONS+=("create-store"); SINGLE_STORE="$2"; shift 2 ;;
         --create-litcal-store)  ACTIONS+=("create-litcal-store"); shift ;;
         --create-martyrology-store) ACTIONS+=("create-martyrology-store"); shift ;;
+        --seed-tuples)          ACTIONS+=("seed-tuples"); SEED_STORE="$2"; shift 2 ;;
         -h|--help)              usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
     esac
@@ -83,6 +100,15 @@ OPENFGA_INTERNAL_URL="${OPENFGA_INTERNAL_URL:-http://127.0.0.1:8081}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODELS_DIR="${SCRIPT_DIR}/models"
+
+# OpenFGA's default max tuples per write request is 100, and a write is
+# transactional — chunk well under the cap so a large seed file still applies.
+TUPLE_WRITE_CHUNK=50
+# Page size for reading existing tuples back (OpenFGA caps page_size at 100).
+TUPLE_READ_PAGE=100
+# Hard stop on the read pagination loop, so a server that keeps handing back
+# a continuation token can never spin forever.
+TUPLE_READ_MAX_PAGES=1000
 
 if [[ -t 1 ]]; then
     R=$'\033[0;31m'; G=$'\033[0;32m'; Y=$'\033[1;33m'; B=$'\033[0;34m'; N=$'\033[0m'
@@ -114,10 +140,22 @@ fga() {
 
 # --- actions --------------------------------------------------------------
 
+# find_store_id NAME -> store id on stdout, empty if the store does not exist.
+find_store_id() {
+    local name="$1"
+    fga GET /stores | jq -r --arg n "$name" '.stores[]? | select(.name == $n) | .id // empty' | head -1
+}
+
+# latest_model_id STORE_ID -> id of the store's current model, empty if none.
+latest_model_id() {
+    local store_id="$1"
+    fga GET "/stores/${store_id}/authorization-models" | jq -r '.authorization_models[0]?.id // empty'
+}
+
 create_or_find_store() {
     local name="$1"
     local existing_id
-    existing_id=$(fga GET /stores | jq -r --arg n "$name" '.stores[]? | select(.name == $n) | .id // empty' | head -1)
+    existing_id=$(find_store_id "$name")
     if [[ -n "$existing_id" ]]; then
         ok "Store already exists: $name ($existing_id)"
         echo "$existing_id"
@@ -176,6 +214,161 @@ upload_model_if_changed() {
     echo "$model_id"
 }
 
+# read_all_tuples STORE_ID -> JSON array of {user,relation,object} on stdout.
+# Pages through POST /stores/{id}/read until the continuation token is exhausted.
+read_all_tuples() {
+    local store_id="$1"
+    local token="" prev_token="" page page_tuples body
+    local acc="[]"
+    local pages=0
+
+    while :; do
+        pages=$((pages + 1))
+        if [[ $pages -gt $TUPLE_READ_MAX_PAGES ]]; then
+            err "Read pagination exceeded ${TUPLE_READ_MAX_PAGES} pages — refusing to continue"
+            exit 7
+        fi
+        body=$(jq -cn --argjson ps "$TUPLE_READ_PAGE" --arg t "$token" \
+            'if $t == "" then {page_size:$ps} else {page_size:$ps, continuation_token:$t} end')
+        if ! page=$(fga POST "/stores/${store_id}/read" "$body"); then
+            err "Read request failed (transport) against store ${store_id}"
+            exit 7
+        fi
+        # A non-200 from OpenFGA still comes back as a 200-shaped curl success,
+        # so the body — not the exit status — is what proves the read worked.
+        if ! page_tuples=$(echo "$page" | jq -ce '[.tuples[]? | .key | {user, relation, object}]' 2>/dev/null) \
+           || ! echo "$page" | jq -e 'has("tuples")' >/dev/null 2>&1; then
+            err "Read returned an unexpected body: $page"
+            exit 7
+        fi
+        acc=$(jq -cn --argjson a "$acc" --argjson b "$page_tuples" '$a + $b')
+
+        prev_token="$token"
+        token=$(echo "$page" | jq -r '.continuation_token // empty')
+        [[ -z "$token" ]] && break
+        if [[ "$token" == "$prev_token" ]]; then
+            err "Read pagination stalled — server repeated continuation token"
+            exit 7
+        fi
+    done
+
+    echo "$acc"
+}
+
+# seed_tuples_if_present STORE_ID MODEL_ID NAME
+#
+# Applies auth/models/NAME.tuples.json idempotently. A missing file is a no-op
+# (stores without structural tuples are unaffected); a malformed file is fatal —
+# a silently skipped seed leaves the model inert, which is the failure this
+# guards against.
+seed_tuples_if_present() {
+    local store_id="$1" model_id="$2" name="$3"
+    local tuples_file="${MODELS_DIR}/${name}.tuples.json"
+
+    if [[ ! -f "$tuples_file" ]]; then
+        log "No tuples file at ${tuples_file} — nothing to seed for '$name'"
+        return 0
+    fi
+
+    log "Seeding structural tuples from ${tuples_file}"
+
+    # --- validate the file, loudly ---------------------------------------
+    if ! jq -e . "$tuples_file" >/dev/null 2>&1; then
+        err "Tuples file is not valid JSON: $tuples_file"
+        exit 6
+    fi
+    if ! jq -e '(.tuples | type) == "array"' "$tuples_file" >/dev/null 2>&1; then
+        err "Tuples file has no '.tuples' array: $tuples_file"
+        exit 6
+    fi
+    local bad_count
+    bad_count=$(jq '[.tuples[] | select(
+        (.user     | type) != "string" or .user     == "" or
+        (.relation | type) != "string" or .relation == "" or
+        (.object   | type) != "string" or .object   == ""
+    )] | length' "$tuples_file")
+    if [[ "$bad_count" != "0" ]]; then
+        err "$bad_count entr(y|ies) in $tuples_file lack a non-empty user/relation/object"
+        jq -r '.tuples[] | select(
+            (.user     | type) != "string" or .user     == "" or
+            (.relation | type) != "string" or .relation == "" or
+            (.object   | type) != "string" or .object   == ""
+        ) | "        " + tojson' "$tuples_file" >&2
+        exit 6
+    fi
+
+    local desired_count
+    desired_count=$(jq '.tuples | length' "$tuples_file")
+    if [[ "$desired_count" -eq 0 ]]; then
+        warn "Tuples file declares an empty tuple list — nothing to seed"
+        return 0
+    fi
+
+    # --- diff against what is already in the store -----------------------
+    # OpenFGA rejects a write of an already-existing tuple, and writes are
+    # transactional, so one duplicate would fail the whole batch. Read first,
+    # write only the difference.
+    local existing_json
+    existing_json=$(read_all_tuples "$store_id")
+
+    local key_expr='"\(.user)|\(.relation)|\(.object)"'
+    local missing_json
+    missing_json=$(jq -c -n --argjson existing "$existing_json" --slurpfile f "$tuples_file" "
+        (\$existing | map({(${key_expr}): true}) | add // {}) as \$seen
+        | [ \$f[0].tuples[] | {user, relation, object}
+            | select(\$seen[${key_expr}] != true) ]")
+
+    local missing_count
+    missing_count=$(echo "$missing_json" | jq 'length')
+
+    if [[ "$missing_count" -eq 0 ]]; then
+        ok "All ${desired_count} structural tuple(s) already present — nothing to write"
+    else
+        local written=0 i payload result
+        for (( i = 0; i < missing_count; i += TUPLE_WRITE_CHUNK )); do
+            payload=$(echo "$missing_json" | jq -c \
+                --argjson s "$i" --argjson c "$TUPLE_WRITE_CHUNK" --arg m "$model_id" \
+                '{writes: {tuple_keys: .[$s : $s + $c]}, authorization_model_id: $m}')
+            if ! result=$(fga POST "/stores/${store_id}/write" "$payload"); then
+                err "Tuple write failed (transport) against store ${store_id}"
+                exit 7
+            fi
+            # A successful write returns `{}`. Anything with a `code`/`message`
+            # is an OpenFGA error delivered with a non-2xx status — curl -sS
+            # exits 0 on those, so the body has to be inspected explicitly.
+            if ! echo "$result" | jq -e . >/dev/null 2>&1 \
+               || [[ -n "$(echo "$result" | jq -r '.code // .message // empty')" ]]; then
+                err "Tuple write rejected by OpenFGA: $result"
+                exit 7
+            fi
+            written=$((written + $(echo "$missing_json" | jq --argjson s "$i" --argjson c "$TUPLE_WRITE_CHUNK" '.[$s : $s + $c] | length')))
+        done
+        if [[ "$written" -ne "$missing_count" ]]; then
+            err "Wrote ${written} tuple(s) but ${missing_count} were missing — refusing to report success"
+            exit 7
+        fi
+        ok "Wrote ${written} new structural tuple(s) (${desired_count} declared in file)"
+    fi
+
+    # --- drift: report, never delete -------------------------------------
+    # Anything this run wrote came from the file, so pre-write state is the
+    # only place drift can live.
+    local drift_json drift_count
+    drift_json=$(jq -c -n --argjson existing "$existing_json" --slurpfile f "$tuples_file" "
+        (\$f[0].tuples | map({user, relation, object})) as \$want
+        | (\$want | map(.relation) | unique) as \$rels
+        | (\$want | map({(${key_expr}): true}) | add // {}) as \$wantset
+        | [ \$existing[]
+            | select(.relation as \$r | \$rels | index(\$r))
+            | select(\$wantset[${key_expr}] != true) ]")
+    drift_count=$(echo "$drift_json" | jq 'length')
+    if [[ "$drift_count" -gt 0 ]]; then
+        warn "${drift_count} tuple(s) in the store use a relation this file manages but are absent from it:"
+        echo "$drift_json" | jq -r '.[] | "        \(.user)  \(.relation)  \(.object)"' >&2
+        warn "Left in place — this script never deletes tuples. Remove them deliberately if stale."
+    fi
+}
+
 do_create_store() {
     local name="$1"
     local model_file="${MODELS_DIR}/${name}.json"
@@ -184,6 +377,7 @@ do_create_store() {
     local store_id model_id
     store_id=$(create_or_find_store "$name")
     model_id=$(upload_model_if_changed "$store_id" "$model_file")
+    seed_tuples_if_present "$store_id" "$model_id" "$name"
 
     echo
     echo "${B}=== $name handoff values ===${N}"
@@ -192,6 +386,34 @@ do_create_store() {
     echo "OPENFGA_MODEL_ID=$model_id"
     echo "# OPENFGA_PRESHARED_KEY: deliver out-of-band; never put in handoff doc"
     echo
+}
+
+do_seed_tuples() {
+    local name="$1"
+    local tuples_file="${MODELS_DIR}/${name}.tuples.json"
+    log "Seeding tuples for store '$name' (file: $tuples_file)"
+
+    if [[ ! -f "$tuples_file" ]]; then
+        err "Tuples file not found: $tuples_file"
+        exit 6
+    fi
+
+    local store_id model_id
+    store_id=$(find_store_id "$name")
+    if [[ -z "$store_id" ]]; then
+        err "Store not found: $name — run --create-store $name first"
+        exit 3
+    fi
+    ok "Store: $name ($store_id)"
+
+    model_id=$(latest_model_id "$store_id")
+    if [[ -z "$model_id" ]]; then
+        err "Store '$name' has no authorization model — run --create-store $name first"
+        exit 5
+    fi
+    ok "Model: $model_id"
+
+    seed_tuples_if_present "$store_id" "$model_id" "$name"
 }
 
 # --- main -----------------------------------------------------------------
@@ -203,6 +425,7 @@ for action in "${ACTIONS[@]}"; do
         create-store)         do_create_store "$SINGLE_STORE" ;;
         create-litcal-store)  do_create_store "LiturgicalCalendar" ;;
         create-martyrology-store) do_create_store "Martyrology" ;;
+        seed-tuples)          do_seed_tuples "$SEED_STORE" ;;
     esac
 done
 

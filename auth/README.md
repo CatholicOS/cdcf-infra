@@ -138,10 +138,26 @@ cd /opt/cdcf-auth/auth
 ./setup-openfga.sh   --target production --create-martyrology-store
 ```
 
-`setup-openfga.sh` uploads models but never writes tuples. The `Martyrology`
-store's model is governance-body-scoped and is inert until its
-`edition → governed_by → governance_body` tuples are seeded — see
-`handoffs/martyrology.md` for the one-time seeding commands.
+`setup-openfga.sh` uploads each store's model and then seeds its **structural**
+tuples from `auth/models/<StoreName>.tuples.json`, if that file exists. The
+`Martyrology` model is governance-body-scoped and inert without its
+`edition → governed_by → governance_body` tuples, so those ship as
+`auth/models/Martyrology.tuples.json` and are applied by the run above.
+`LiturgicalCalendar` has no such file and is unaffected.
+
+Seeding is idempotent (existing tuples are read first and only the difference is
+written), fatal on a malformed tuples file, and **never deletes** — tuples in the
+store using a managed relation but absent from the file are reported as drift and
+left alone. To re-apply after editing a tuples file, without re-uploading the
+model:
+
+```bash
+./setup-openfga.sh --target production --seed-tuples Martyrology
+```
+
+**Human role grants are not seeded.** Giving a person `reader`/`editor`/`admin`
+on a `governance_body` is a per-person operator action keyed to a Zitadel `sub`
+— see `handoffs/martyrology.md` → "Grant a person a role on a body".
 
 The Zitadel script prints handoff values per property at the end (issuer, org ID, project ID, app/client IDs, and — for confidential clients like CDCF — the **one-time client secret**). The OpenFGA script prints store ID + model ID. Use those values to write `handoffs/<property>.md` per the template in `handoffs/README.md`. **The CDCF client secret is unrecoverable** once the run finishes — capture it from the script output and store it in the consumer repo's deploy env at the moment of first provisioning.
 
@@ -205,7 +221,8 @@ The dedicated user is the principle-of-least-privilege boundary. Even if `VPS_SS
 3. Add provisioning logic to `setup-zitadel.sh` (a new `do_provision_<property>` function mirroring `do_provision_litcal`) that creates the Project + roles + OIDC app(s) the property needs. Roles + OIDC app config should be lifted from the property's own dev compose / config to ensure exact parity.
 4. For OpenFGA-using properties:
    - Drop the authorization model JSON into `auth/models/<StoreName>.json`.
-   - Run `./setup-openfga.sh --target production --create-store <StoreName>` to create the store and seed the model.
+   - If the model is inert without structural tuples (as `Martyrology` is), add them to `auth/models/<StoreName>.tuples.json` — an object with a `tuples` array of `{"user","relation","object"}` entries. Structural wiring only; never human role grants.
+   - Run `./setup-openfga.sh --target production --create-store <StoreName>` to create the store, upload the model, and seed those tuples.
    - All properties share the single `openfga` database on the host Postgres, keyed by store name — no extra DB needed.
 5. Write a handoff doc under `handoffs/<property>.md` with the non-secret values (issuer URL, client ID, project ID, store ID, model ID) the property's repo needs to consume. Secrets (client secret, preshared key) deliver out-of-band.
 6. Open an issue in the property's repo with the handoff doc inline.
