@@ -24,7 +24,7 @@ Plesk's Docker extension picks up `docker-compose.prod.yml` at the path above vi
 
 ## Architecture pin
 
-- Single Zitadel instance, **one Zitadel Org per property** (`CDCF`, `LiturgicalCalendar`, `BibleGet`, `OntoKit`). No automatic cross-property SSO — intentional.
+- Single Zitadel instance, **one Zitadel Org per property** (`CDCF`, `LiturgicalCalendar`, `BibleGet`, `OntoKit`, `Martyrology`). No automatic cross-property SSO — intentional.
 - **`zitadel-login` v2 UI service is deployed** but ONLY serves `/ui/v2/login/*` — that's the login flow the **admin console** (`/ui/console/`) redirects to. Per-property end-user login UIs are still built into each property's frontend (calling Zitadel APIs directly). The two concerns are independent: admin console login (this service) vs. end-user login (each property's own UI).
 - **Login names = email addresses** (instance-wide). `UserLoginMustBeDomain=false` + `UserEmailAsUsername=true` in the default domain policy — so users log in with their email, globally unique across the instance. No `<username>@<org>.<external-domain>` legacy suffix. Machine users (e.g. `automation`, `login-client`) still use machine names since they don't have emails.
 - **Shared OpenFGA**, with its own database on the host Postgres.
@@ -130,11 +130,18 @@ curl -s http://127.0.0.1:8081/healthz       # OpenFGA → 200
 #      automation-user.pat  - IAM_OWNER, used by setup-zitadel.sh and our own admin scripts
 #      login-client.pat     - IAM_LOGIN_CLIENT, consumed by the zitadel-login container
 #    Run the bootstrap scripts (--all does rename-bootstrap-admin + create-orgs
-#    + provision-litcal + provision-litcal-frontend + provision-cdcf-website):
+#    + provision-litcal + provision-litcal-frontend + provision-cdcf-website
+#    + provision-martyrology):
 cd /opt/cdcf-auth/auth
 ./setup-zitadel.sh   --target production --all
 ./setup-openfga.sh   --target production --create-litcal-store
+./setup-openfga.sh   --target production --create-martyrology-store
 ```
+
+`setup-openfga.sh` uploads models but never writes tuples. The `Martyrology`
+store's model is governance-body-scoped and is inert until its
+`edition → governed_by → governance_body` tuples are seeded — see
+`handoffs/martyrology.md` for the one-time seeding commands.
 
 The Zitadel script prints handoff values per property at the end (issuer, org ID, project ID, app/client IDs, and — for confidential clients like CDCF — the **one-time client secret**). The OpenFGA script prints store ID + model ID. Use those values to write `handoffs/<property>.md` per the template in `handoffs/README.md`. **The CDCF client secret is unrecoverable** once the run finishes — capture it from the script output and store it in the consumer repo's deploy env at the moment of first provisioning.
 

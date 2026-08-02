@@ -10,9 +10,17 @@
 #                          auth/models/NAME.json as the latest model. Idempotent:
 #                          skips upload if the model already matches what's there.
 #   --create-litcal-store  Shorthand for `--create-store LiturgicalCalendar`.
+#   --create-martyrology-store
+#                          Shorthand for `--create-store Martyrology`.
+#
+# NOTE: this script uploads the MODEL only — it never writes tuples. The
+# Martyrology model is governance-body-scoped, so it is inert until the
+# `edition → governed_by → governance_body` tuples are seeded. Those commands
+# live in handoffs/martyrology.md and must be run once after store creation.
 #
 # Usage:
 #   ./setup-openfga.sh --target production --create-litcal-store
+#   ./setup-openfga.sh --target production --create-martyrology-store
 #   ./setup-openfga.sh --target production --create-store LiturgicalCalendar
 #
 # Requires: bash >= 4, curl, jq.
@@ -32,6 +40,8 @@ Usage: $0 --target {local,production} ACTION [ACTION ...]
 Actions:
   --create-store NAME       Create store NAME + upload auth/models/NAME.json
   --create-litcal-store     Shorthand for --create-store LiturgicalCalendar
+  --create-martyrology-store
+                            Shorthand for --create-store Martyrology
 
 Environment variables (sourced from .env.\$target):
   OPENFGA_API_URL           (default: https://authz.catholicdigitalcommons.org)
@@ -46,6 +56,7 @@ while [[ $# -gt 0 ]]; do
         --target)               TARGET="$2"; shift 2 ;;
         --create-store)         ACTIONS+=("create-store"); SINGLE_STORE="$2"; shift 2 ;;
         --create-litcal-store)  ACTIONS+=("create-litcal-store"); shift ;;
+        --create-martyrology-store) ACTIONS+=("create-martyrology-store"); shift ;;
         -h|--help)              usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
     esac
@@ -191,6 +202,7 @@ for action in "${ACTIONS[@]}"; do
     case "$action" in
         create-store)         do_create_store "$SINGLE_STORE" ;;
         create-litcal-store)  do_create_store "LiturgicalCalendar" ;;
+        create-martyrology-store) do_create_store "Martyrology" ;;
     esac
 done
 
