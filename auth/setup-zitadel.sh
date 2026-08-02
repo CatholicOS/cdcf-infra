@@ -26,12 +26,25 @@
 #                              localhost dev callbacks registered. Emits
 #                              client_secret ONCE on first run; re-runs against
 #                              an existing app cannot recover the secret.
+#   --provision-martyrology    Under the Martyrology Org, create the
+#                              MartyrologyAPI Project + an API OIDC app with
+#                              client_secret_basic (the API validates bearer
+#                              tokens via Zitadel's /oauth/v2/introspect,
+#                              which is HTTP-Basic authenticated with
+#                              client_id/client_secret). Deliberately creates
+#                              NO project roles: martyrology-api performs zero
+#                              Zitadel role/scope checks — every authorization
+#                              decision is an OpenFGA check against the
+#                              Martyrology store. Emits client_secret ONCE on
+#                              first run; re-runs against an existing app
+#                              cannot recover the secret.
 #   --rename-bootstrap-admin   If the IAM admin user still has the legacy
 #                              `<username>@<orgdomain>` suffix in its
 #                              username, rename it to $ZITADEL_ADMIN_EMAIL.
 #   --all                      Run --rename-bootstrap-admin, --create-orgs,
 #                              --provision-litcal, --provision-litcal-frontend,
-#                              --provision-cdcf-website in sequence.
+#                              --provision-cdcf-website, --provision-martyrology
+#                              in sequence.
 #
 # Usage:
 #   ./setup-zitadel.sh --target production --all
@@ -53,13 +66,14 @@ usage() {
 Usage: $0 --target {local,production} ACTION [ACTION ...]
 
 Actions:
-  --create-orgs               Create CDCF, LiturgicalCalendar, BibleGet, OntoKit (idempotent)
+  --create-orgs               Create CDCF, LiturgicalCalendar, BibleGet, OntoKit, Martyrology (idempotent)
   --create-org NAME           Create a single Org by name (idempotent)
   --provision-litcal          Provision LitCal Project + roles + API app
   --provision-litcal-frontend Provision LitCal Frontend OIDC app (Web/PKCE)
   --provision-cdcf-website    Provision CDCF Website Project + roles + Web OIDC app (client_secret_post)
+  --provision-martyrology     Provision Martyrology Project + API app (client_secret_basic, NO roles)
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
-  --all                       Above five in dependency order
+  --all                       Above six in dependency order
 
 Environment variables (sourced from .env.\$target):
   ZITADEL_ISSUER                 (default: https://auth.catholicdigitalcommons.org)
@@ -78,8 +92,9 @@ while [[ $# -gt 0 ]]; do
         --provision-litcal)          ACTIONS+=("provision-litcal"); shift ;;
         --provision-litcal-frontend) ACTIONS+=("provision-litcal-frontend"); shift ;;
         --provision-cdcf-website)    ACTIONS+=("provision-cdcf-website"); shift ;;
+        --provision-martyrology)     ACTIONS+=("provision-martyrology"); shift ;;
         --rename-bootstrap-admin)    ACTIONS+=("rename-bootstrap-admin"); shift ;;
-        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend" "provision-cdcf-website"); shift ;;
+        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend" "provision-cdcf-website" "provision-martyrology"); shift ;;
         -h|--help)                   usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
     esac
@@ -100,8 +115,13 @@ case "$TARGET" in
 esac
 
 [[ ! -f "$ENV_FILE" ]] && { echo "Env file not found: $ENV_FILE" >&2; exit 1; }
+# The directive has to sit immediately above `source` itself. On a compound
+# line it binds to the first command (`set -a`) and never reaches `source`, so
+# SC1090 fired here despite the disable being present.
+set -a
 # shellcheck disable=SC1090
-set -a; source "$ENV_FILE"; set +a
+source "$ENV_FILE"
+set +a
 
 # --- config ---------------------------------------------------------------
 
@@ -117,7 +137,7 @@ PAT="$(cat "$ZITADEL_PAT_FILE")"
 [[ -z "$PAT" ]] && { echo "PAT file is empty" >&2; exit 2; }
 
 # Canonical Org list for the umbrella.
-ORG_NAMES=(CDCF LiturgicalCalendar BibleGet OntoKit)
+ORG_NAMES=(CDCF LiturgicalCalendar BibleGet OntoKit Martyrology)
 
 # Colors only when stdout is a TTY (so scripted captures aren't cluttered with escapes).
 if [[ -t 1 ]]; then
@@ -461,8 +481,28 @@ JSON
 # Create an OIDC API-type app (no redirect URIs; for service-to-service /
 # token-validation use). Idempotent: skips creation if an app of the same
 # name already exists in the project.
+#
+# Auth method defaults to PRIVATE_KEY_JWT (no client secret — the client_id
+# is used purely as the expected audience claim on locally-validated JWTs;
+# this is what LitCal consumes). Pass API_AUTH_METHOD_TYPE_BASIC for a
+# confidential API client that needs a client_secret — required when the
+# consumer validates bearer tokens by calling Zitadel's /oauth/v2/introspect
+# endpoint, which is HTTP-Basic authenticated with client_id/client_secret
+# (this is what martyrology-api does).
+#
+# Args:
+#   $1 project_id
+#   $2 app_name
+#   $3 auth_method_type   API_AUTH_METHOD_TYPE_PRIVATE_KEY_JWT (default) | _BASIC
+#
+# Returns on stdout: "app_id|client_id|client_secret"
+#   - client_secret is empty for PRIVATE_KEY_JWT apps
+#   - client_secret is empty when the app ALREADY EXISTED (Zitadel's
+#     ListApplications doesn't return secrets; rotation is a separate action
+#     against the regenerate endpoint — not implemented here).
 create_oidc_api_app() {
     local project_id="$1" name="$2"
+    local auth_method_type="${3:-API_AUTH_METHOD_TYPE_PRIVATE_KEY_JWT}"
     local existing
     existing=$(zapi POST /zitadel.application.v2.ApplicationService/ListApplications \
         "{\"filters\":[{\"project_id_filter\":{\"projectId\":\"$project_id\"}},{\"name_filter\":{\"name\":\"$name\"}}]}")
@@ -471,21 +511,35 @@ create_oidc_api_app() {
     if [[ -n "$app_id" ]]; then
         client_id=$(echo "$existing" | jq -r '.applications[0].oidcConfiguration.clientId // .applications[0].apiConfiguration.clientId // empty')
         ok "OIDC API app exists: $name ($app_id, client_id=$client_id)"
-        echo "$app_id|$client_id"
+        # Client secret unrecoverable on the "exists" branch — emit empty.
+        echo "$app_id|$client_id|"
         return 0
     fi
-    log "Creating OIDC API app: $name"
+    log "Creating OIDC API app: $name (authMethod=$auth_method_type)"
     local result
     result=$(zapi POST /zitadel.application.v2.ApplicationService/CreateApplication \
-        "{\"projectId\":\"$project_id\",\"name\":\"$name\",\"apiConfiguration\":{\"authMethodType\":\"API_AUTH_METHOD_TYPE_PRIVATE_KEY_JWT\"}}")
+        "{\"projectId\":\"$project_id\",\"name\":\"$name\",\"apiConfiguration\":{\"authMethodType\":\"$auth_method_type\"}}")
     app_id=$(echo "$result" | jq -r '.id // .applicationId // empty')
     client_id=$(echo "$result" | jq -r '.apiConfiguration.clientId // .clientId // empty')
     if [[ -z "$app_id" ]]; then
         err "Failed to create API app: $result"
         exit 8
     fi
+    # Capture the one-time client secret for confidential API clients. Zitadel
+    # returns it inside apiConfiguration on create; never retrievable later.
+    local client_secret
+    client_secret=$(echo "$result" | jq -r '.apiConfiguration.clientSecret // .clientSecret // empty')
+    # Fail fast if a confidential client was created without a secret —
+    # otherwise the empty-secret on stdout is indistinguishable from the
+    # "already exists" branch, and the caller silently loses the one-time
+    # secret (Zitadel won't return it again on subsequent reads).
+    if [[ "$auth_method_type" != "API_AUTH_METHOD_TYPE_PRIVATE_KEY_JWT" && -z "$client_secret" ]]; then
+        err "Created confidential API app $name ($app_id) but response had no client_secret."
+        err "The secret cannot be recovered. Delete the app via the Zitadel console and re-run."
+        exit 8
+    fi
     ok "Created OIDC API app: $name ($app_id, client_id=$client_id)"
-    echo "$app_id|$client_id"
+    echo "$app_id|$client_id|$client_secret"
 }
 
 do_provision_litcal_frontend() {
@@ -646,9 +700,11 @@ do_provision_litcal() {
 
     create_roles "$project_id" "${LITCAL_ROLES[@]}"
 
-    local app_info
+    local app_info app_id client_id _client_secret
     app_info=$(create_oidc_api_app "$project_id" "$LITCAL_API_APP_NAME")
-    local app_id="${app_info%|*}" client_id="${app_info#*|}"
+    # LitCal's API app uses PRIVATE_KEY_JWT (default) so the secret field is
+    # always empty here — discard it.
+    IFS='|' read -r app_id client_id _client_secret <<<"$app_info"
 
     # Emit handoff values to stdout for the operator / handoff doc.
     echo
@@ -660,6 +716,65 @@ do_provision_litcal() {
     echo "ZITADEL_CLIENT_ID=$client_id"
     echo "# Client secret + service-user keys must be generated separately"
     echo "# via the Zitadel console and delivered to LitCal out-of-band."
+    echo
+}
+
+# --- Martyrology provisioning ---------------------------------------------
+
+MARTYROLOGY_ORG_NAME="Martyrology"
+MARTYROLOGY_PROJECT_NAME="MartyrologyAPI"
+MARTYROLOGY_API_APP_NAME="MartyrologyAPI Backend"
+# NOTE: deliberately NO project roles. martyrology-api performs zero Zitadel
+# role or scope checks — Zitadel supplies identity only (the `sub` claim), and
+# every authorization decision is an OpenFGA Check against the `Martyrology`
+# store (auth/models/Martyrology.json). Do not add a MARTYROLOGY_ROLES array
+# "for symmetry" with LitCal/CDCF: unused roles in a token are a liability, not
+# a feature. If the API ever grows a role check, add the roles then.
+
+do_provision_martyrology() {
+    log "Provisioning Martyrology"
+    local org_id
+    org_id=$(find_org_id "$MARTYROLOGY_ORG_NAME")
+    if [[ -z "$org_id" ]]; then
+        err "$MARTYROLOGY_ORG_NAME Org not found. Run --create-orgs (or --create-org $MARTYROLOGY_ORG_NAME) first."
+        exit 14
+    fi
+    ok "Found $MARTYROLOGY_ORG_NAME Org: $org_id"
+
+    local project_id
+    project_id=$(create_project "$org_id" "$MARTYROLOGY_PROJECT_NAME")
+
+    # client_secret_basic: the API validates incoming bearer tokens by POSTing
+    # to $issuer/oauth/v2/introspect with HTTP Basic (client_id, client_secret).
+    local app_info app_id client_id client_secret
+    app_info=$(create_oidc_api_app "$project_id" "$MARTYROLOGY_API_APP_NAME" \
+        "API_AUTH_METHOD_TYPE_BASIC")
+    IFS='|' read -r app_id client_id client_secret <<<"$app_info"
+
+    # Emit handoff values to stdout for the operator / handoff doc.
+    echo
+    echo "${B}=== Martyrology handoff values ===${N}"
+    echo "ZITADEL_ORG_ID=$org_id"
+    echo "ZITADEL_PROJECT_ID=$project_id"
+    echo "ZITADEL_API_APP_ID=$app_id"
+    echo
+    echo "${B}--- for /etc/martyrology/api.env on the martyrology-api VPS ---${N}"
+    echo "MARTYROLOGY_ZITADEL_ISSUER=$ZITADEL_ISSUER"
+    echo "MARTYROLOGY_ZITADEL_CLIENT_ID=$client_id"
+    if [[ -n "$client_secret" ]]; then
+        echo "MARTYROLOGY_ZITADEL_CLIENT_SECRET=$client_secret   # ← ONE-TIME EMIT"
+        warn "The client secret above is printed ONCE and is UNRECOVERABLE."
+        warn "  Write it into /etc/martyrology/api.env NOW, before this shell scrolls."
+    else
+        warn "Client secret not emitted (app already existed; ListApplications"
+        warn "  does not return secrets). Rotate via the Zitadel console:"
+        warn "  $MARTYROLOGY_ORG_NAME Org → Projects → $MARTYROLOGY_PROJECT_NAME →"
+        warn "  Apps → $MARTYROLOGY_API_APP_NAME → Regenerate Client Secret"
+    fi
+    echo "# No project roles were created — all authorization is OpenFGA."
+    echo "# Run: ./setup-openfga.sh --target $TARGET --create-martyrology-store"
+    echo "# for MARTYROLOGY_OPENFGA_{API_URL,STORE_ID,MODEL_ID}, then seed the"
+    echo "# governed_by tuples per handoffs/martyrology.md."
     echo
 }
 
@@ -675,6 +790,7 @@ for action in "${ACTIONS[@]}"; do
         provision-litcal)           do_provision_litcal ;;
         provision-litcal-frontend)  do_provision_litcal_frontend ;;
         provision-cdcf-website)     do_provision_cdcf_website ;;
+        provision-martyrology)      do_provision_martyrology ;;
     esac
 done
 

@@ -1,0 +1,13 @@
+{
+  "$comment": "Structural tuples only: which governance body governs which edition. Human role grants (user:<sub> -> reader/editor/admin on a governance_body) are deliberately NOT here -- they are per-person operator actions, not version-controlled seed data.",
+  "tuples": [
+    {"user": "governance_body:editio_typica", "relation": "governed_by", "object": "edition:martyrologium_romanum_1584"},
+    {"user": "governance_body:editio_typica", "relation": "governed_by", "object": "edition:martyrologium_romanum_1749"},
+    {"user": "governance_body:editio_typica", "relation": "governed_by", "object": "edition:martyrologium_romanum_1914"},
+    {"user": "governance_body:editio_typica", "relation": "governed_by", "object": "edition:martyrologium_romanum_2001"},
+    {"user": "governance_body:editio_typica", "relation": "governed_by", "object": "edition:martyrologium_romanum_2004"},
+    {"user": "governance_body:cei", "relation": "governed_by", "object": "edition:martyrologium_romanum_2004_it_IT"},
+    {"user": "governance_body:unassigned_en_translatio", "relation": "governed_by", "object": "edition:martyrologium_romanum_1914_en_unofficial"},
+    {"user": "governance_body:unassigned_en_translatio", "relation": "governed_by", "object": "edition:martyrologium_romanum_2004_en_unofficial"}
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.1",
+  "type_definitions": [
+    {
+      "type": "user"
+    },
+    {
+      "type": "governance_body",
+      "relations": {
+        "admin": { "this": {} },
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "object": "", "relation": "admin" } }
+            ]
+          }
+        },
+        "reader": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "object": "", "relation": "editor" } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
+          "editor": { "directly_related_user_types": [{ "type": "user" }] },
+          "reader": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "edition",
+      "relations": {
+        "governed_by": { "this": {} },
+        "can_admin": {
+          "tupleToUserset": {
+            "tupleset": { "object": "", "relation": "governed_by" },
+            "computedUserset": { "object": "", "relation": "admin" }
+          }
+        },
+        "can_edit": {
+          "tupleToUserset": {
+            "tupleset": { "object": "", "relation": "governed_by" },
+            "computedUserset": { "object": "", "relation": "editor" }
+          }
+        },
+        "can_read_texts": {
+          "tupleToUserset": {
+            "tupleset": { "object": "", "relation": "governed_by" },
+            "computedUserset": { "object": "", "relation": "reader" }
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "governed_by":    { "directly_related_user_types": [{ "type": "governance_body" }] },
+          "can_admin":      { "directly_related_user_types": [] },
+          "can_edit":       { "directly_related_user_types": [] },
+          "can_read_texts": { "directly_related_user_types": [] }
+        }
+      }
+    }
+  ]
+}
