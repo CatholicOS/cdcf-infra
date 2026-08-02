@@ -76,14 +76,16 @@ because a half-configured deployment silently cannot be curated.
 
 ## Zitadel
 
+Provisioned 2026-08-02 against production.
+
 - **Issuer**: `https://auth.catholicdigitalcommons.org`
 - **Org name**: `Martyrology`
-- **Org ID**: `<populated on first run — record here from script output>`
+- **Org ID**: `384518609990320131`
 - **Project name**: `MartyrologyAPI`
-- **Project ID**: `<populated on first run>`
+- **Project ID**: `384518610174869507`
 - **OIDC API app** (used by the FastAPI backend to validate incoming bearer tokens):
   - Name: `MartyrologyAPI Backend`
-  - App ID: `<populated on first run>`
+  - App ID: `384518610325864451`
   - **Client ID** (→ `MARTYROLOGY_ZITADEL_CLIENT_ID`): `<populated on first run>`
   - Auth method: `API_AUTH_METHOD_TYPE_BASIC` — confidential client with a `client_secret`
   - **Client secret**: **out-of-band** (one-time emit — see Warning 1). Never committed to this file.
@@ -99,8 +101,8 @@ Adding project roles "for symmetry" with the LitCal and CDCF Website projects wo
 
 - **API URL**: `https://authz.catholicdigitalcommons.org`
 - **Store name**: `Martyrology`
-- **Store ID**: `<populated on first run>`
-- **Authorization model ID**: `<populated on first run>`
+- **Store ID**: `01KZ1M9NJR1JHTMTV091X5DMYZ`
+- **Authorization model ID**: `01KZ1M9NM7YRM5PB1KH2WF67XX`
 - **Model source**: `cdcf-infra/auth/models/Martyrology.json` (schema 1.1)
 - **Preshared key**: **out-of-band**
 
@@ -243,8 +245,8 @@ MARTYROLOGY_ZITADEL_CLIENT_ID=<populated on first run>
 MARTYROLOGY_ZITADEL_CLIENT_SECRET=<out-of-band — one-time emit, see Warning 1>
 
 MARTYROLOGY_OPENFGA_API_URL=https://authz.catholicdigitalcommons.org
-MARTYROLOGY_OPENFGA_STORE_ID=<populated on first run>
-MARTYROLOGY_OPENFGA_MODEL_ID=<populated on first run>
+MARTYROLOGY_OPENFGA_STORE_ID=01KZ1M9NJR1JHTMTV091X5DMYZ
+MARTYROLOGY_OPENFGA_MODEL_ID=01KZ1M9NM7YRM5PB1KH2WF67XX
 ```
 
 All six must be set together — see Warning 2.
