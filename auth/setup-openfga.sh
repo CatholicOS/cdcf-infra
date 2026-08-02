@@ -43,8 +43,10 @@ set -euo pipefail
 
 TARGET=""
 ACTIONS=()
-SINGLE_STORE=""
-SEED_STORE=""
+# Store names ride along inside each ACTIONS entry ("create-store:NAME") rather
+# than in shared scalars: with one SINGLE_STORE/SEED_STORE variable, a second
+# --create-store overwrote the first and the same store was provisioned twice
+# while the earlier name was silently dropped.
 
 usage() {
     cat >&2 <<EOF
@@ -70,10 +72,10 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target)               TARGET="$2"; shift 2 ;;
-        --create-store)         ACTIONS+=("create-store"); SINGLE_STORE="$2"; shift 2 ;;
+        --create-store)         [[ $# -ge 2 ]] || usage; ACTIONS+=("create-store:$2"); shift 2 ;;
         --create-litcal-store)  ACTIONS+=("create-litcal-store"); shift ;;
         --create-martyrology-store) ACTIONS+=("create-martyrology-store"); shift ;;
-        --seed-tuples)          ACTIONS+=("seed-tuples"); SEED_STORE="$2"; shift 2 ;;
+        --seed-tuples)          [[ $# -ge 2 ]] || usage; ACTIONS+=("seed-tuples:$2"); shift 2 ;;
         -h|--help)              usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
     esac
@@ -146,9 +148,23 @@ fga() {
 # --- actions --------------------------------------------------------------
 
 # find_store_id NAME -> store id on stdout, empty if the store does not exist.
+# OpenFGA does NOT enforce unique store names, so a name can legitimately match
+# more than one store (two provisioning runs racing, or a store created by hand).
+# Silently taking the first match would upload a model into one store and seed
+# tuples into it while the handoff records whichever id happened to sort first —
+# a split-brain that is invisible until a Check returns the wrong answer. Refuse
+# to guess instead.
 find_store_id() {
-    local name="$1"
-    fga GET /stores | jq -r --arg n "$name" '.stores[]? | select(.name == $n) | .id // empty' | head -1
+    local name="$1" ids count
+    ids=$(fga GET /stores | jq -r --arg n "$name" '.stores[]? | select(.name == $n) | .id // empty')
+    count=$(printf '%s' "$ids" | grep -c . || true)
+    if [[ "$count" -gt 1 ]]; then
+        err "Found $count stores named '$name'; refusing to guess which to use:"
+        printf '%s\n' "$ids" | sed 's/^/        /' >&2
+        err "Delete the duplicates, or point the script at a uniquely-named store."
+        exit 8
+    fi
+    printf '%s' "$ids"
 }
 
 # latest_model_id STORE_ID -> id of the store's current model, empty if none.
@@ -190,8 +206,19 @@ upload_model_if_changed() {
     existing_model_id=$(echo "$existing_models" | jq -r '.authorization_models[0]?.id // empty')
 
     if [[ -n "$existing_model_id" ]]; then
-        # Normalize both sides to compare (strip empty/null fields the server adds).
-        local normalize='walk(if type == "object" then with_entries(select(.value != "" and .value != null and .value != {})) else . end)'
+        # Normalize both sides to compare (strip empty/null fields the server
+        # adds: "metadata": null, "relations": {}, "module": "", "condition": "").
+        #
+        # `.key == "this"` is load-bearing. In an OpenFGA model, {"this": {}} is
+        # the direct-assignment userset — a relation's entire meaning. Without
+        # the exemption, `select(.value != {})` strips the "this" key, leaving
+        # {}, which the same rule then strips from the relation map, which then
+        # empties `relations` and strips that too. Every `[user]` relation
+        # disappears from the comparison: LiturgicalCalendar normalized to types
+        # with NO relations at all, and Martyrology lost `governed_by` and
+        # `governance_body.admin`. Deleting `governed_by` from the file compared
+        # EQUAL to the server and silently never uploaded.
+        local normalize='walk(if type == "object" then with_entries(select(.value != null and .value != "" and (.value != {} or .key == "this"))) else . end)'
         local server_model file_model
         server_model=$(echo "$existing_models" | jq -cS ".authorization_models[0].type_definitions | $normalize")
         file_model=$(jq -cS ".type_definitions | $normalize" "$model_file")
@@ -426,11 +453,11 @@ do_seed_tuples() {
 log "Target: $TARGET (api: $OPENFGA_API_URL, internal: $OPENFGA_INTERNAL_URL)"
 
 for action in "${ACTIONS[@]}"; do
-    case "$action" in
-        create-store)         do_create_store "$SINGLE_STORE" ;;
+    case "${action%%:*}" in
+        create-store)         do_create_store "${action#*:}" ;;
         create-litcal-store)  do_create_store "LiturgicalCalendar" ;;
         create-martyrology-store) do_create_store "Martyrology" ;;
-        seed-tuples)          do_seed_tuples "$SEED_STORE" ;;
+        seed-tuples)          do_seed_tuples "${action#*:}" ;;
     esac
 done
 

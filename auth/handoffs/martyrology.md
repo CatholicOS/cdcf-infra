@@ -34,16 +34,24 @@ def authz_enabled(self) -> bool:
 
 With `MARTYROLOGY_ZITADEL_ISSUER` empty, **`auth_enabled` is `False`** — and likewise `authz_enabled` is `False` while the OpenFGA vars are empty. The service still starts and reports healthy.
 
-**The write path fails closed in that state.** Verified by exercising the real
-routes against a freshly built app under every partial-config combination —
-every one returns `401`:
+**The write path fails closed in that state** — every partial configuration
+denies every write. Verified by exercising the real routes (`PATCH`/`DELETE` on
+an elogium, `PUT` on an edition) against a freshly built app. Which guard fires
+depends on whether the request carries a usable identity, so both columns matter:
 
-| config state | `PATCH` elogium | `DELETE` elogium | `PUT` edition |
-| --- | --- | --- | --- |
-| nothing configured | 401 | 401 | 401 |
-| curation backend, no auth, no authz | 401 | 401 | 401 |
-| authz configured, auth **not** | 401 | 401 | 401 |
-| auth configured, authz **not** | 401 | 401 | 401 |
+| config state | no `Authorization` header | valid bearer token |
+| --- | --- | --- |
+| nothing configured | 401 | 401 |
+| curation backend, no auth, no authz | 401 | 401 |
+| authz configured, auth **not** | 401 | 401 |
+| auth configured, authz **not** | 401 | **403** |
+
+The `403` in the last row is the only case where a request gets far enough to be
+*authorized* rather than merely *authenticated*: the identity resolves, and then
+`Authz.check` denies because there is no store to ask. In the first three rows no
+identity can be produced at all — with `issuer` empty, even a well-formed token
+yields `None` — so the request never reaches an authorization decision. Both
+outcomes are denials; the distinction matters only when reading logs.
 
 Three independent guards produce that, in `martyrology-api`:
 
