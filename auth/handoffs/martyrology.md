@@ -18,7 +18,7 @@ This handoff records only the **non-secret** values needed to point `martyrology
 
 Recommended: run the provisioner in a session where you already have `/etc/martyrology/api.env` open in an editor on the VPS.
 
-## ⚠ Warning 2 — until the env is filled in, the API is up but unauthenticated
+## ⚠ Warning 2 — until the env is filled in, curation is unusable (but not open)
 
 `martyrology-api` computes its auth posture from the env, in `src/martyrology_api/config.py`:
 
@@ -32,9 +32,37 @@ def authz_enabled(self) -> bool:
     return bool(self.openfga_api_url and self.openfga_store_id)
 ```
 
-With `MARTYROLOGY_ZITADEL_ISSUER` empty, **`auth_enabled` is `False`** — and likewise `authz_enabled` is `False` while the OpenFGA vars are empty. The service still starts and reports healthy. It does **not** fail closed on the write path: the curator surfaces (`PUT`/`PATCH`/`DELETE`) are reachable **unauthenticated** in that state.
+With `MARTYROLOGY_ZITADEL_ISSUER` empty, **`auth_enabled` is `False`** — and likewise `authz_enabled` is `False` while the OpenFGA vars are empty. The service still starts and reports healthy.
 
-The copyrighted texts stay redacted for anonymous callers regardless of this setting, so the read-side licensing exposure is not the risk here — **the write surfaces are**. Do not expose the deployment publicly with a partially-filled env. Fill all six `MARTYROLOGY_*` vars in the same maintenance window, or keep the write surfaces firewalled until you do.
+**The write path fails closed in that state.** Verified by exercising the real
+routes against a freshly built app under every partial-config combination —
+every one returns `401`:
+
+| config state | `PATCH` elogium | `DELETE` elogium | `PUT` edition |
+| --- | --- | --- | --- |
+| nothing configured | 401 | 401 | 401 |
+| curation backend, no auth, no authz | 401 | 401 | 401 |
+| authz configured, auth **not** | 401 | 401 | 401 |
+| auth configured, authz **not** | 401 | 401 | 401 |
+
+Three independent guards produce that, in `martyrology-api`:
+
+- `get_identity` returns `None` without an `Authorization` header, and
+  `require_relation` turns `None` into `401`;
+- `Authenticator.identity()` short-circuits to `None` when `issuer` is empty, so
+  even a presented bearer token yields `401`;
+- `Authz.check` returns `False` when `api_url` or `store_id` is empty — and on
+  every error path (transport failure, non-200, unparseable body) — so a
+  resolved identity still gets `403`.
+
+So the risk of a partially-filled env is **silent unusability, not silent
+exposure**: curation is inert while `/healthz` reports healthy, with nothing at
+startup announcing the misconfiguration. Read behaviour is unaffected, and the
+copyrighted texts stay redacted for anonymous callers regardless.
+
+Fill all six `MARTYROLOGY_*` vars in the same maintenance window anyway — not to
+close an exposure, but because the client secret is emitted once (Warning 1) and
+because a half-configured deployment silently cannot be curated.
 
 ---
 
