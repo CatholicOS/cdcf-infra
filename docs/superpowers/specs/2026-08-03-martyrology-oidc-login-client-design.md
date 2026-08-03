@@ -234,10 +234,21 @@ GitHub `vars`, exactly as `API_BASE` is today:
   callback.
 
 The deploy workflow's existing smoke-test step gains one assertion:
-`GET $SITE_URL/api/auth/providers` must list the `zitadel` provider. This
-verifies that the manually-set secrets actually landed, without CI ever holding
-them. Without it, a misconfigured sign-in deploys green and fails only when
-someone first tries to log in.
+`GET $SITE_URL/api/auth/providers` must list the `zitadel` provider.
+
+**What that assertion does and does not prove.** It proves Auth.js booted and
+registered the provider, which catches a missing `AUTH_SECRET` and a missing
+`AUTH_ZITADEL_ISSUER`. It does **not** validate `AUTH_ZITADEL_SECRET`: the
+provider is constructed from configuration and is advertised whether or not the
+secret is correct, since nothing exchanges a code at discovery time. A wrong
+client secret surfaces only when someone completes a real authorization-code
+flow and the token exchange returns `invalid_client`.
+
+Nothing in CI can close that gap without performing an interactive login, so the
+client secret is proven by the manual acceptance run in §3 rather than by the
+deploy. The assertion is still worth having — it converts the most common
+misconfiguration from "fails silently for the first curator who tries" into a
+red deploy.
 
 ## 5. Testing
 

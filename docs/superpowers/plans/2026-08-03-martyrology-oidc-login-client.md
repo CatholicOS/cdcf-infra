@@ -45,7 +45,7 @@ Every task's requirements implicitly include this section.
 | `lib/zitadel-token.ts` (create) | Pure token-lifecycle logic: expiry check + refresh-grant exchange. No Auth.js imports, so it is trivially testable |
 | `lib/proxy-headers.ts` (create) | Build the upstream header map from an optional access token. One responsibility, one function |
 | `auth.ts` (create) | Auth.js configuration; wires the Zitadel provider to `lib/zitadel-token.ts` |
-| `types/next-auth.d.ts` (create) | Module augmentation so `session.accessToken` and the JWT fields typecheck |
+| `types/next-auth.d.ts` (create) | Module augmentation for the JWT's token fields and the session's `error`. The access token is declared on the JWT only, never on the Session |
 | `app/api/auth/[...nextauth]/route.ts` (create) | Auth.js route handlers |
 | `app/api/mr/[...path]/route.ts` (modify) | Attach the bearer token; stays thin by delegating to `lib/proxy-headers.ts` |
 | `components/AuthStatusView.tsx` (create) | Presentational sign-in/sign-out control — a client component, so it is testable without async-server-component machinery |
@@ -191,7 +191,7 @@ Exit codes 15 and 16 are the next free values — 10 through 14 are already take
 
 In `usage()`, add a line after the `--provision-martyrology` line:
 
-```
+```text
   --provision-martyrology-frontend
                               Provision Martyrology Frontend OIDC apps (Web/client_secret_post, prod + dev)
 ```
@@ -439,7 +439,7 @@ shred -u /tmp/martyrology-token.json 2>/dev/null || rm -f /tmp/martyrology-token
   - `refreshAccessToken(token: ZitadelToken, fetchImpl?: typeof fetch): Promise<ZitadelToken>`
   - `type ZitadelToken = { access_token?: string; refresh_token?: string; expires_at?: number; error?: string }` (`expires_at` is **seconds** since epoch, matching Auth.js's `account.expires_at`)
   - `auth()`, `handlers`, `signIn`, `signOut` exported from `@/auth`
-  - `session.accessToken?: string` and `session.error?: string`
+  - `session.error?: string` on the Session; `access_token`, `refresh_token`, `expires_at`, `error` on the JWT. The access token is never placed on the Session — Auth.js serves the Session as the body of `GET /api/auth/session`.
 
 All work happens in `cd /home/johnrdorazio/development/CatholicOS_org/martyrology-frontend`.
 
@@ -666,8 +666,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return { ...token, ...(await refreshAccessToken(current)) };
     },
     async session({ session, token }) {
+      // NEVER put the access token here. Auth.js sets the session callback's
+      // return value as the response body of GET /api/auth/session
+      // (packages/core/src/lib/actions/session.ts: `response.body = newSession`),
+      // so anything on the session is readable by the browser. Putting the
+      // token here would hand out exactly what the BFF exists to withhold.
+      // The proxy reads it from the JWT server-side instead — see Task 4.
+      //
+      // `error` is safe: it is a string like "RefreshAccessTokenError", and
+      // the header needs it to tell the curator to sign in again.
       const current = token as ZitadelToken;
-      session.accessToken = current.access_token;
       session.error = current.error;
       return session;
     },
@@ -675,7 +683,33 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 });
 ```
 
-**Checkpoint — client authentication method.** The built-in Zitadel provider must agree with the app's `OIDC_AUTH_METHOD_TYPE_POST`. Task 2 Step 4 established which form the live app accepts. If Task 2 found that HTTP Basic was required rather than form fields, add `client: { token_endpoint_auth_method: "client_secret_post" }` to the `Zitadel({...})` call to force the form-field variant, since `_POST` is what we provisioned. Verify at Step 9 rather than assuming.
+**Checkpoint — client authentication method.** The Auth.js provider and the Zitadel app must agree on how the client authenticates at the token endpoint. We provisioned `OIDC_AUTH_METHOD_TYPE_POST`, i.e. `client_secret_post` — credentials as form fields. Task 2 Step 4 established what the live app actually accepts. Two cases, and only one of them calls for an override:
+
+- **Task 2 succeeded with form fields** (the expected result, matching `_POST`). The app is correct. Sign in at Step 9. If it fails with `invalid_client`, Auth.js is defaulting to HTTP Basic — *then* add `client: { token_endpoint_auth_method: "client_secret_post" }` to the `Zitadel({...})` call and retry.
+- **Task 2 succeeded only with HTTP Basic.** The app is not really `_POST`, despite what we asked for. Do not paper over this by forcing `client_secret_post` in Auth.js — that would break the exchange. Reconcile the mismatch at its source: confirm what the app's `authMethodType` is in the Zitadel console and either correct the app or change the provisioner's constant so the two agree.
+
+Either way, verify at Step 9 rather than assuming.
+
+**Checkpoint — `getToken` and the `salt` argument.** Task 4's proxy calls
+`getToken({ req, secret })` from `next-auth/jwt`. Auth.js v5 encrypts the session
+cookie with a salt derived from the cookie name, and in some v5 betas `getToken`
+requires `salt` explicitly rather than defaulting it. If `getToken` returns
+`null` for a request that is definitely signed in, that is the cause: pass
+`salt` matching the session cookie name — `authjs.session-token`, or
+`__Secure-authjs.session-token` when the cookie is secure. Confirm which by
+reading the cookie names in the browser's dev tools rather than guessing, since
+the prefix depends on whether the deployment is HTTPS.
+
+Note also that the v5 migration guide steers callers from `getToken` toward
+`auth()`. That guidance does not apply here: `auth()` returns the Session, and
+this design specifically requires a value the Session must not carry.
+
+**Regression guard, not yet written.** The leak this replaced — an access token
+on the Session — would be caught permanently by a unit test on the session
+callback, but only if `auth.ts` exports its `callbacks` object so a test can
+call it directly. That restructure is deliberately not in this plan. Until it
+exists, the property is verified manually: while signed in, `GET
+/api/auth/session` must not contain `access_token` or `accessToken`.
 
 - [ ] **Step 7: Add the type augmentation**
 
@@ -683,10 +717,20 @@ Create `types/next-auth.d.ts`:
 
 ```ts
 import "next-auth";
+import "next-auth/jwt";
 
 declare module "next-auth" {
   interface Session {
-    accessToken?: string;
+    // Deliberately no accessToken — the session is browser-readable.
+    error?: string;
+  }
+}
+
+declare module "next-auth/jwt" {
+  interface JWT {
+    access_token?: string;
+    refresh_token?: string;
+    expires_at?: number;
     error?: string;
   }
 }
@@ -774,7 +818,7 @@ already runs against this issuer."
 - Modify: `martyrology-frontend/app/api/mr/[...path]/route.ts`
 
 **Interfaces:**
-- Consumes: `auth()` from `@/auth` (Task 3)
+- Consumes: `getToken` from `next-auth/jwt`, reading the JWT fields declared in `types/next-auth.d.ts` (Task 3). Deliberately **not** `auth()` — see the route's comment.
 - Produces: `buildUpstreamHeaders(accessToken?: string | null): Record<string, string>`
 
 - [ ] **Step 1: Write the failing header test**
@@ -850,8 +894,10 @@ Create `lib/__tests__/mr-route.test.ts`. It lives in `lib/__tests__/` rather tha
 ```ts
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// Mock the JWT reader, not the session. The route deliberately never calls
+// auth() — see the comment in route.ts.
 const authMock = vi.fn();
-vi.mock("@/auth", () => ({ auth: authMock }));
+vi.mock("next-auth/jwt", () => ({ getToken: authMock }));
 
 import { GET } from "@/app/api/mr/[...path]/route";
 
@@ -877,7 +923,7 @@ describe("/api/mr proxy", () => {
   });
 
   it("forwards the session access token as a bearer header when signed in", async () => {
-    authMock.mockResolvedValue({ accessToken: "tok-123" });
+    authMock.mockResolvedValue({ access_token: "tok-123" });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
     );
@@ -889,7 +935,7 @@ describe("/api/mr proxy", () => {
   });
 
   it("still proxies anonymously if the session lookup throws", async () => {
-    authMock.mockRejectedValue(new Error("no session store"));
+    authMock.mockRejectedValue(new Error("cannot decrypt session cookie"));
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
     );
@@ -933,7 +979,7 @@ Replace the whole body of `app/api/mr/[...path]/route.ts`:
 
 ```ts
 import { NextRequest } from "next/server";
-import { auth } from "@/auth";
+import { getToken } from "next-auth/jwt";
 import { buildUpstreamHeaders } from "@/lib/proxy-headers";
 
 const API_BASE = process.env.API_BASE ?? "http://localhost:8000";
@@ -943,11 +989,17 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ path: strin
   const qs = req.nextUrl.search; // includes leading "?" or ""
   const url = `${API_BASE}/api/v1/${path.map(encodeURIComponent).join("/")}${qs}`;
 
-  // A failure to read the session must not take the site down for anonymous
-  // visitors, who are the majority and who need no session at all.
+  // Read the token from the encrypted JWT, NOT from auth(). auth() returns the
+  // Session, which Auth.js also serves as the body of GET /api/auth/session —
+  // so a token routed through the session would be readable by the browser.
+  // getToken decodes the cookie server-side and never leaves this process.
+  //
+  // A failure to read it must not take the site down for anonymous visitors,
+  // who are the majority and who need no token at all.
   let accessToken: string | undefined;
   try {
-    accessToken = (await auth())?.accessToken;
+    const token = await getToken({ req, secret: process.env.AUTH_SECRET });
+    accessToken = typeof token?.access_token === "string" ? token.access_token : undefined;
   } catch {
     accessToken = undefined;
   }
@@ -1314,16 +1366,18 @@ In the "Smoke-test the deployed site" step, insert this **between** the home-pag
 Placement is not cosmetic: the editions loop ends with `exit 0` on success, so anything appended after it never runs.
 
 ```bash
-          # AUTH_SECRET and AUTH_ZITADEL_SECRET live in Plesk's Node
-          # environment and cannot be inspected from CI. This endpoint is the
-          # observable proxy for them: Auth.js only advertises a provider it
-          # was able to configure. Without this check a broken sign-in deploys
-          # green and fails on the first curator who tries to log in.
+          # Provider-registration check only. It proves Auth.js booted and
+          # registered the provider, which catches a missing AUTH_SECRET or
+          # AUTH_ZITADEL_ISSUER. It does NOT validate AUTH_ZITADEL_SECRET —
+          # the provider is built from config and advertised whether or not
+          # the secret is right, because nothing exchanges a code here. A
+          # wrong secret shows up as invalid_client during a real sign-in,
+          # which is why the manual acceptance run is what proves it.
           PROV_FILE=$(mktemp)
           STATUS=$(curl -sS -o "$PROV_FILE" -w '%{http_code}' \
             --connect-timeout 10 --max-time 45 "$SITE_URL/api/auth/providers" || echo "000")
           if [ "$STATUS" != "200" ] || ! grep -q '"zitadel"' "$PROV_FILE"; then
-            echo "::error::GET $SITE_URL/api/auth/providers returned $STATUS without a zitadel provider. Set AUTH_SECRET and AUTH_ZITADEL_SECRET in Plesk → Domains → romanmartyrology.com → Node.js → Custom environment variables, then redeploy."
+            echo "::error::GET $SITE_URL/api/auth/providers returned $STATUS without a zitadel provider. Auth.js did not boot or did not register the provider — check AUTH_SECRET and AUTH_ZITADEL_ISSUER in Plesk → Domains → romanmartyrology.com → Node.js → Custom environment variables, then redeploy. Note this check cannot detect a wrong AUTH_ZITADEL_SECRET; that surfaces as invalid_client on a real sign-in."
             head -c 300 "$PROV_FILE"; echo
             exit 1
           fi
@@ -1505,4 +1559,4 @@ Verified end to end: signed in as a user holding \`can_read_texts\`, a 2004-edit
 
 **Placeholder scan:** no TBD/TODO; every code step carries the actual code; `<Dev client_id>`-style angle brackets appear only where a runtime secret must be pasted by the operator, and each is accompanied by where to get it.
 
-**Type consistency:** `ZitadelToken` fields (`access_token`, `refresh_token`, `expires_at`, `error`) are used identically in `lib/zitadel-token.ts`, `auth.ts`, and the tests. `expires_at` is seconds everywhere, `nowMs` is milliseconds and only appears as an `isExpired` parameter. `session.accessToken` is declared in `types/next-auth.d.ts` and consumed in Task 4's route and Task 4's test mock. `buildUpstreamHeaders` has one signature across its definition, test, and call site.
+**Type consistency:** `ZitadelToken` fields (`access_token`, `refresh_token`, `expires_at`, `error`) are used identically in `lib/zitadel-token.ts`, `auth.ts`, and the tests. `expires_at` is seconds everywhere, `nowMs` is milliseconds and only appears as an `isExpired` parameter. `access_token` is declared on the `JWT` interface in `types/next-auth.d.ts` and consumed in Task 4's route via `getToken` and in Task 4's test mock; it never appears on the `Session` interface. `buildUpstreamHeaders` has one signature across its definition, test, and call site.
