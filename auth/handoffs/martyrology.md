@@ -182,13 +182,23 @@ platform:martyrology --on_platform--> governance_body:unassigned_en_translatio
 No `superuser` tuple is seeded from this file. The first superuser grant is a one-time, out-of-band bootstrap (rollout Step 6), written directly to OpenFGA rather than through the API's own grant endpoint — because that endpoint requires a body admin to already exist, and until this tuple is written there is none:
 
 ```bash
-curl -sS -X POST "https://authz.catholicdigitalcommons.org/stores/$STORE/write" \
+curl -sS --fail-with-body -X POST "https://authz.catholicdigitalcommons.org/stores/$STORE/write" \
   -H "Authorization: Bearer $OPENFGA_PRESHARED_KEY" \
   -H "Content-Type: application/json" \
   -d '{"writes":{"tuple_keys":[{"user":"user:<OPERATOR_SUB>","relation":"superuser","object":"platform:martyrology"}]}}'
 ```
 
-This is the **only** grant ever made this way. Every grant afterwards — including granting a second superuser — goes through `/admin/permissions` once the first superuser exists (see "Grant endpoint" under Consumer integration below).
+Once that tuple exists, **governance-body** grants go through the API's
+`/api/v1/admin/permissions` endpoint (see "Grant endpoint" under Consumer
+integration below).
+
+**Superuser grants never do.** The grant endpoint fixes its object type to
+`governance_body` in the route itself, so `platform:` tuples are structurally
+unreachable through the API — deliberately, since an endpoint that could write
+them would let any body admin mint themselves a superuser. Every superuser
+grant, not just the first, is therefore made out-of-band with the curl above,
+substituting the new operator's `sub`. Revoking one is the same request with
+`"deletes"` in place of `"writes"`.
 
 **Not yet live as of this commit.** The model file here declares `platform`/`on_platform`, but the production OpenFGA store still runs the pre-Task-6 model until it is re-uploaded (rollout Step 5: `./setup-openfga.sh --target production --create-martyrology-store`), and `MARTYROLOGY_OPENFGA_MODEL_ID` in `/etc/martyrology/api.env` must be repointed at the resulting model ID (rollout Step 6) before superuser inheritance resolves for the running API. Against the old model, a pinned check for `on_platform` simply has no such relation to evaluate — checks resolve to `false`, safely but uselessly.
 

@@ -1,5 +1,5 @@
 {
-  "$comment": "Structural tuples only: which governance body governs which edition. Human role grants (user:<sub> -> reader/editor/admin on a governance_body) are deliberately NOT here -- they are per-person operator actions, not version-controlled seed data.",
+  "$comment": "Structural tuples only, of two kinds: which governance body governs which edition (governed_by), and which platform each governance body sits on (on_platform). Per-person grants are deliberately NOT here -- neither human role grants (user:<sub> -> reader/editor/admin on a governance_body) nor superuser grants (user:<sub> -> superuser on platform:martyrology). Those are operator actions, not version-controlled seed data.",
   "tuples": [
     {"user": "governance_body:editio_typica", "relation": "governed_by", "object": "edition:martyrologium_romanum_1584"},
     {"user": "governance_body:editio_typica", "relation": "governed_by", "object": "edition:martyrologium_romanum_1749"},
