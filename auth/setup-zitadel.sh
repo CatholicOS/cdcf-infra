@@ -78,8 +78,10 @@ Actions:
   --provision-litcal-frontend Provision LitCal Frontend OIDC app (Web/PKCE)
   --provision-cdcf-website    Provision CDCF Website Project + roles + Web OIDC app (client_secret_post)
   --provision-martyrology     Provision Martyrology Project + roles + API app (client_secret_basic)
+  --provision-martyrology-frontend
+                              Provision Martyrology Frontend OIDC apps (Web/client_secret_post, prod + dev)
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
-  --all                       Above six in dependency order
+  --all                       Above seven in dependency order
 
 Environment variables (sourced from .env.\$target):
   ZITADEL_ISSUER                 (default: https://auth.catholicdigitalcommons.org)
@@ -102,8 +104,9 @@ while [[ $# -gt 0 ]]; do
         --provision-litcal-frontend) ACTIONS+=("provision-litcal-frontend"); shift ;;
         --provision-cdcf-website)    ACTIONS+=("provision-cdcf-website"); shift ;;
         --provision-martyrology)     ACTIONS+=("provision-martyrology"); shift ;;
+        --provision-martyrology-frontend) ACTIONS+=("provision-martyrology-frontend"); shift ;;
         --rename-bootstrap-admin)    ACTIONS+=("rename-bootstrap-admin"); shift ;;
-        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend" "provision-cdcf-website" "provision-martyrology"); shift ;;
+        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend" "provision-cdcf-website" "provision-martyrology" "provision-martyrology-frontend"); shift ;;
         -h|--help)                   usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
     esac
@@ -742,6 +745,25 @@ do_provision_litcal() {
 MARTYROLOGY_ORG_NAME="Martyrology"
 MARTYROLOGY_PROJECT_NAME="MartyrologyAPI"
 MARTYROLOGY_API_APP_NAME="MartyrologyAPI Backend"
+
+# --- Martyrology Frontend (OIDC login client) -----------------------------
+#
+# Two confidential Web apps in the SAME MartyrologyAPI project as the API
+# validator app. Same project means create_project's projectRoleAssertion puts
+# urn:zitadel:iam:org:project:<id>:roles into the token with no :aud scope
+# requested — which is why these are not a project of their own.
+#
+# Production and dev are separate apps so that the secret on a developer's
+# machine is never the production secret, and so the production client never
+# accepts an HTTP redirect URI (devMode=false rejects them outright).
+MARTYROLOGY_FRONTEND_APP_NAME="Martyrology Frontend"
+MARTYROLOGY_FRONTEND_APP_NAME_DEV="Martyrology Frontend (Dev)"
+MARTYROLOGY_FRONTEND_URLS=("https://romanmartyrology.com")
+MARTYROLOGY_FRONTEND_DEV_URLS=("http://localhost:3000")
+# Auth.js v5 mounts its callback at /api/auth/callback/<provider-id>, and the
+# built-in Zitadel provider's id is "zitadel". This string and the frontend's
+# provider id must change together or sign-in fails at the redirect.
+MARTYROLOGY_FRONTEND_CALLBACK_PATH="/api/auth/callback/zitadel"
 # NOTE: three project roles exist (MARTYROLOGY_ROLES above): admin and
 # martyrology_editor are a coarse population gate on curation writes, checked
 # alongside — never instead of — OpenFGA. Zitadel remains identity-only
@@ -801,6 +823,82 @@ do_provision_martyrology() {
     echo
 }
 
+# Create one Martyrology Frontend OIDC app and emit its handoff block.
+# Internal helper for do_provision_martyrology_frontend — mirrors
+# _emit_cdcf_app, which solves the identical prod/non-prod problem.
+#
+# Args:
+#   $1 project_id
+#   $2 app_name
+#   $3 dev_mode      "true" | "false"
+#   $4 label         handoff section label
+#   $5..  origin URLs, one per arg
+_emit_martyrology_frontend_app() {
+    local project_id="$1" app_name="$2" dev_mode="$3" label="$4"
+    shift 4
+    local origins=("$@")
+
+    local redirect_uris_json post_logout_uris_json
+    redirect_uris_json=$(printf '%s\n' "${origins[@]}" \
+        | jq -R --arg cb "$MARTYROLOGY_FRONTEND_CALLBACK_PATH" '. + $cb' | jq -s '.')
+    post_logout_uris_json=$(printf '%s\n' "${origins[@]}" | jq -R '.' | jq -s '.')
+
+    # Confidential client with client_secret_post (Auth.js v5 server-side).
+    local app_info app_id client_id client_secret
+    app_info=$(create_oidc_web_app "$project_id" "$app_name" \
+        "$redirect_uris_json" "$post_logout_uris_json" \
+        "OIDC_AUTH_METHOD_TYPE_POST" "$dev_mode")
+    IFS='|' read -r app_id client_id client_secret <<<"$app_info"
+
+    echo
+    echo "${B}=== Martyrology Frontend handoff values — $label ===${N}"
+    echo "ZITADEL_APP_ID=$app_id"
+    echo "AUTH_ZITADEL_ID=$client_id          # ← client_id"
+    if [[ -n "$client_secret" ]]; then
+        echo "AUTH_ZITADEL_SECRET=$client_secret   # ← client_secret (one-time emit)"
+        warn "The client secret above is printed ONCE and is UNRECOVERABLE."
+        warn "  Put it into the Plesk Node environment NOW, before this shell scrolls."
+    else
+        warn "Client secret not emitted (app already existed; ListApplications"
+        warn "  does not return secrets). Rotate via the Zitadel console:"
+        warn "  $MARTYROLOGY_ORG_NAME Org → Projects → $MARTYROLOGY_PROJECT_NAME →"
+        warn "  Apps → $app_name → Regenerate Client Secret"
+    fi
+    echo "# Registered redirect URIs:"
+    for url in "${origins[@]}"; do echo "#   $url$MARTYROLOGY_FRONTEND_CALLBACK_PATH"; done
+    echo "# Registered post-logout URIs:"
+    for url in "${origins[@]}"; do echo "#   $url"; done
+    echo "# devMode=$dev_mode"
+}
+
+do_provision_martyrology_frontend() {
+    log "Provisioning Martyrology Frontend OIDC apps"
+    local org_id
+    org_id=$(find_org_id "$MARTYROLOGY_ORG_NAME")
+    if [[ -z "$org_id" ]]; then
+        err "$MARTYROLOGY_ORG_NAME Org not found. Run --create-orgs (or --create-org $MARTYROLOGY_ORG_NAME) first."
+        exit 15
+    fi
+    local project_id
+    project_id=$(find_project_id "$org_id" "$MARTYROLOGY_PROJECT_NAME")
+    if [[ -z "$project_id" ]]; then
+        err "Project $MARTYROLOGY_PROJECT_NAME not found. Run --provision-martyrology first."
+        exit 16
+    fi
+    ok "Found $MARTYROLOGY_PROJECT_NAME Project: $project_id"
+
+    echo
+    echo "${B}=== Martyrology Frontend shared values ===${N}"
+    echo "AUTH_ZITADEL_ISSUER=$ZITADEL_ISSUER"
+    echo "ZITADEL_PROJECT_ID=$project_id"
+
+    _emit_martyrology_frontend_app "$project_id" "$MARTYROLOGY_FRONTEND_APP_NAME" \
+        "false" "Production" "${MARTYROLOGY_FRONTEND_URLS[@]}"
+    _emit_martyrology_frontend_app "$project_id" "$MARTYROLOGY_FRONTEND_APP_NAME_DEV" \
+        "true" "Dev (localhost)" "${MARTYROLOGY_FRONTEND_DEV_URLS[@]}"
+    echo
+}
+
 # --- main -----------------------------------------------------------------
 
 log "Target: $TARGET (issuer: $ZITADEL_ISSUER, internal: $ZITADEL_INTERNAL_URL)"
@@ -814,6 +912,7 @@ for action in "${ACTIONS[@]}"; do
         provision-litcal-frontend)  do_provision_litcal_frontend ;;
         provision-cdcf-website)     do_provision_cdcf_website ;;
         provision-martyrology)      do_provision_martyrology ;;
+        provision-martyrology-frontend) do_provision_martyrology_frontend ;;
     esac
 done
 
