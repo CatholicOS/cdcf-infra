@@ -340,11 +340,43 @@ through the API, and would have to be done in the data repository directly. So
 `can_admin` is best read as "may create an edition and edit its metadata",
 not as "may destroy one".
 
+## Verified end to end — 2026-08-03
+
+A human authorization-code flow was run against production as
+`priest@johnromanodorazio.com`, using the `Martyrology Frontend` OIDC client
+(`--provision-martyrology-frontend`). Three things were established, and they are
+worth keeping because each had been assumed rather than tested:
+
+1. **The API accepts a token minted by a sibling app.** `martyrology-api`
+   introspects using the *API app's* credentials; the token came from the
+   *frontend app*. It was accepted. This was the open question that gated the
+   whole OIDC design — `auth.py` raises 401 when introspection fails and never
+   falls back to anonymous, so a normal content response is proof of acceptance.
+2. **The roles claim arrives without an `:aud` scope.**
+   `urn:zitadel:iam:org:project:384518610174869507:roles` = `["admin"]`, present
+   in the id_token *and in the introspection response* — which is the one that
+   matters, since that response is what the API reads. Same-project membership is
+   sufficient; no `urn:zitadel:iam:org:project:id:...:aud` scope was requested.
+3. **Licensing works in its allow direction.** For
+   `martyrologium_romanum_2004`, the authenticated request returned
+   `metadata.access = "public"` with text; the anonymous one returned
+   `"restricted-texts"` with `text: null`. Per `read.py`, `access` is only
+   overwritten to `"restricted-texts"` when `texts_allowed()` is false, so this
+   confirms `can_read_texts` resolved true.
+
+**A trap worth knowing about.** An earlier attempt produced a token for
+`sub` `373244245643558915` — a *different* account with an active SSO session in
+the same browser, holding no roles on this project. Its output was
+indistinguishable from the design being broken: no roles claim, redacted text.
+Zitadel puts no `email` in the **access** token, so the identity is only visible
+by decoding the **id_token**. When a result here looks like failure, confirm who
+the token belongs to before concluding anything.
+
 ## What's NOT provisioned here (follow-ups)
 
 - ~~**Tuple seeding is manual.**~~ **Done** — `setup-openfga.sh` now seeds `auth/models/Martyrology.tuples.json` idempotently after the model upload, and `--seed-tuples Martyrology` re-applies it on its own. See "Tuple seeding — automated" above.
 - **Governance for the English editions** — see the `unassigned_en_translatio` section above. Resolving it means editing the `governed_by` entry in `auth/models/Martyrology.tuples.json` and re-running `--seed-tuples Martyrology`; note that re-pointing an edition **adds** the new tuple and reports the old one as drift rather than deleting it, so the stale tuple must be removed explicitly.
-- **Human role grants** — no individual has any role on any body until someone runs the grant command above. Each curator signs in to Zitadel once so a `sub` exists, then gets a tuple. These are deliberately **not** seeded from the tuples file.
+- ~~**Human role grants** — no individual has any role on any body.~~ **Partly done, 2026-08-03.** `priest@johnromanodorazio.com` (`sub` `384646678734438403`) holds the Zitadel project role `admin`, verified in a live token — see "Verified end to end" below. The mechanism is unchanged and still applies to everyone else: each curator signs in to Zitadel once so a `sub` exists, then gets a grant, and these are deliberately **not** seeded from the tuples file.
 - **Platform model not yet uploaded** — Task 6 added `platform`/`on_platform` to `auth/models/Martyrology.json` and the three `on_platform` tuples to `auth/models/Martyrology.tuples.json`, but production still runs the pre-Task-6 model until `./setup-openfga.sh --target production --create-martyrology-store` is re-run (rollout Step 5) and `MARTYROLOGY_OPENFGA_MODEL_ID` is repointed in `/etc/martyrology/api.env` (rollout Step 6). See "Platform type and superuser bootstrap" above.
-- **No platform superuser exists yet** — the bootstrap tuple (rollout Step 6) has not been written. Until it is, no one holds `admin` through `platform:martyrology`, and `/admin/permissions` has no caller who can pass `_require_body_admin` except whoever already holds a direct `admin` tuple on a body (currently no one).
-- **Zitadel project roles not yet created in production** — `MARTYROLOGY_ROLES` (`admin`, `martyrology_editor`, `developer`) is declared in `setup-zitadel.sh` (Task 6) but the live `MartyrologyAPI` Project has none yet. Re-run `./setup-zitadel.sh --target production --provision-martyrology`; `create_roles` is idempotent and only adds what's missing.
+- **Superuser bootstrap — needs re-checking, the old text is wrong.** This entry used to say no bootstrap tuple had been written and that nobody held `admin` on any body. That is disproven: on 2026-08-03 a live authenticated request for a restricted 2004 edition returned unredacted text, which means `texts_allowed()` → OpenFGA `can_read_texts` resolved **true** for `priest@johnromanodorazio.com`. Some grant path therefore exists. **Which** path was not determined — it could be the `platform:martyrology` superuser tuple or a direct `admin` tuple on a body. Read the store before relying on either: an assumption about the mechanism is exactly what this entry got wrong before.
+- ~~**Zitadel project roles not yet created in production**~~ **Done.** All three of `MARTYROLOGY_ROLES` (`admin`, `martyrology_editor`, `developer`) exist on the live `MartyrologyAPI` Project, confirmed by the owner on 2026-08-03 and corroborated by a live token carrying `admin`. `create_roles` remains idempotent if it is ever re-run.
