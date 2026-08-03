@@ -74,7 +74,7 @@ Every task's requirements implicitly include this section.
 
 **Interfaces:**
 - Consumes: `create_oidc_web_app "$project_id" "$name" "$redirect_uris_json" "$post_logout_uris_json" "$auth_method_type" "$dev_mode"` → prints `app_id|client_id|client_secret`; `find_org_id`, `find_project_id`, `log`, `ok`, `warn`, `err`
-- Produces: the `--provision-martyrology-frontend` action, and two Zitadel apps whose `client_id`/`client_secret` Task 2 and Task 6 consume
+- Produces: the `--provision-martyrology-frontend` action, and the production Zitadel app whose `client_id`/`client_secret` Task 2 and Task 6 consume
 
 All work happens in `cd /home/johnrdorazio/development/CatholicOS_org/cdcf-infra`.
 
@@ -261,7 +261,7 @@ problem for the CDCF website."
 
 **Interfaces:**
 - Consumes: the `--provision-martyrology-frontend` action from Task 1
-- Produces: the Dev app's `client_id` and `client_secret`, and a go/no-go answer for the entire rest of the plan
+- Produces: the production app's `client_id` and `client_secret`, and a go/no-go answer for the entire rest of the plan
 
 **This is a gate.** The design rests on one unverified assumption: that `martyrology-api`, which introspects using the *API app's* credentials, accepts a token issued to a *different app in the same project*. Everything else is a variation on something already in production. If this fails, stop and escalate — do not start Task 3.
 
@@ -409,8 +409,11 @@ shred -u /tmp/martyrology-token.json 2>/dev/null || rm -f /tmp/martyrology-token
 >   `localhost:3000` while signed in.
 > - **Task 6 Step 2** — instructs generating an `AUTH_SECRET` distinct from "the
 >   dev value".
+> - **Task 7 Step 1** — the handoff table lists both apps.
 > - **Task 7 Step 3** — the README section documents local sign-in with the Dev
 >   client.
+> - **Task 7 Step 5** — the issue-close comment claims two apps exist and that
+>   "both apps live in the MartyrologyAPI project". Do not post it as written.
 >
 > The code and unit tests in Tasks 3, 4 and 5 are unaffected — they mock the
 > session and never contact Zitadel. Only the live verification steps are.
@@ -1484,7 +1487,7 @@ Verified end to end: signed in as a user holding \`can_read_texts\`, a 2004-edit
 |---|---|
 | D1 confidential Web app | Task 1 (`OIDC_AUTH_METHOD_TYPE_POST`), Task 3 |
 | D2 same project | Task 1 Step 1, verified Task 2 Step 5 |
-| D3 two apps, prod + dev | Task 1 Steps 1-2 |
+| D3 one app, production only (revised) | Task 1 Steps 1-2, as amended |
 | D4 Auth.js v5 pinned | Global Constraints, Task 3 Step 1 |
 | §1 no `martyrology-api` changes | Global Constraints |
 | §1 anonymous path preserved | Task 4 Steps 1, 3 (asserted, not assumed) |

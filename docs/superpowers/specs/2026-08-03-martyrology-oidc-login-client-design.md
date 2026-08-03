@@ -38,7 +38,7 @@ Established 2026-08-03 by reading the repos and the provisioning script.
 | Frontend already proxies server-side | Yes — `app/api/mr/[...path]/route.ts` fetches `API_BASE`; the browser calls same-origin `/api/mr/...` via `lib/api.ts:10` |
 | CORS on `martyrology-api` | **None configured** — no `CORSMiddleware`, no `allow_origins`, anywhere in `src/` |
 | Staging environment | None, for either the frontend or the API |
-| LitCal's registered URIs | Production + staging only, no localhost — `auth/setup-zitadel.sh:308-311` |
+| LitCal's registered URIs | Production + staging only, no localhost — `auth/setup-zitadel.sh:309-312` |
 | LitCal's local development | A separate full stack (Postgres, Zitadel, OpenFGA, API) in `LiturgicalCalendarFrontend/docker-compose.yml`, provisioned by its own `scripts/setup-zitadel.sh` |
 | Martyrology's local stack | Does not exist |
 | Sibling precedent | `cdcf-website` runs `next-auth@5.0.0-beta.31` on `next@^16.2.9` against this same Zitadel instance |
@@ -82,7 +82,7 @@ already-solved friction — `_emit_cdcf_app` carries the same caveat.
 genuine advantage — no secret to store or rotate — does not outweigh adding CORS
 to the API and undoing the proxy in exchange for a weaker token posture.
 
-### D2 — Both apps live in the existing `MartyrologyAPI` project
+### D2 — The app lives in the existing `MartyrologyAPI` project
 
 Not a new project. `create_project` already enables `projectRoleAssertion`, so a
 token issued to an app inside the project carries
@@ -96,7 +96,7 @@ LiturgicalCalendar is arranged. Resolves open question 3 in the issue.
 production plus a localhost dev client, on the CDCF Website precedent. That was
 the weaker of the two precedents available.
 
-`LITCAL_FRONTEND_URLS` (`auth/setup-zitadel.sh:308-311`) registers only
+`LITCAL_FRONTEND_URLS` (`auth/setup-zitadel.sh:309-312`) registers only
 `https://litcal.johnromanodorazio.com` and
 `https://litcal-staging.johnromanodorazio.com`. No localhost. LiturgicalCalendar
 does local development against an entirely separate Zitadel — Postgres, Zitadel,
@@ -271,7 +271,7 @@ in production.
 
 This dictates the order of work:
 
-1. Provision the **dev** app only.
+1. Provision the production app.
 2. Complete one manual authorization-code flow using the production redirect URI.
    Nothing is deployed at `https://romanmartyrology.com/api/auth/callback/zitadel`
    yet, so the browser lands on a 404 with the `code` in the address bar.
