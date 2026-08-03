@@ -79,7 +79,7 @@ Actions:
   --provision-cdcf-website    Provision CDCF Website Project + roles + Web OIDC app (client_secret_post)
   --provision-martyrology     Provision Martyrology Project + roles + API app (client_secret_basic)
   --provision-martyrology-frontend
-                              Provision Martyrology Frontend OIDC apps (Web/client_secret_post, prod + dev)
+                              Provision Martyrology Frontend OIDC app (Web/client_secret_post, production only)
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
   --all                       Above seven in dependency order
 
@@ -748,18 +748,18 @@ MARTYROLOGY_API_APP_NAME="MartyrologyAPI Backend"
 
 # --- Martyrology Frontend (OIDC login client) -----------------------------
 #
-# Two confidential Web apps in the SAME MartyrologyAPI project as the API
+# A confidential Web app in the SAME MartyrologyAPI project as the API
 # validator app. Same project means create_project's projectRoleAssertion puts
 # urn:zitadel:iam:org:project:<id>:roles into the token with no :aud scope
-# requested — which is why these are not a project of their own.
+# requested — which is why this is not a project of its own.
 #
-# Production and dev are separate apps so that the secret on a developer's
-# machine is never the production secret, and so the production client never
-# accepts an HTTP redirect URI (devMode=false rejects them outright).
+# Only the production URI is registered here, matching LITCAL_FRONTEND_URLS:
+# production Zitadel carries production redirect URIs only. Local development
+# runs against a separate local Zitadel instance (its own docker-compose
+# stack, mirroring LitCal's setup) rather than a localhost client registered
+# in this production instance — that local stack is a separate design.
 MARTYROLOGY_FRONTEND_APP_NAME="Martyrology Frontend"
-MARTYROLOGY_FRONTEND_APP_NAME_DEV="Martyrology Frontend (Dev)"
 MARTYROLOGY_FRONTEND_URLS=("https://romanmartyrology.com")
-MARTYROLOGY_FRONTEND_DEV_URLS=("http://localhost:3000")
 # Auth.js v5 mounts its callback at /api/auth/callback/<provider-id>, and the
 # built-in Zitadel provider's id is "zitadel". This string and the frontend's
 # provider id must change together or sign-in fails at the redirect.
@@ -894,8 +894,6 @@ do_provision_martyrology_frontend() {
 
     _emit_martyrology_frontend_app "$project_id" "$MARTYROLOGY_FRONTEND_APP_NAME" \
         "false" "Production" "${MARTYROLOGY_FRONTEND_URLS[@]}"
-    _emit_martyrology_frontend_app "$project_id" "$MARTYROLOGY_FRONTEND_APP_NAME_DEV" \
-        "true" "Dev (localhost)" "${MARTYROLOGY_FRONTEND_DEV_URLS[@]}"
     echo
 }
 
