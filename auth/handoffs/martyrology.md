@@ -89,13 +89,23 @@ Provisioned 2026-08-02 against production.
   - **Client ID** (→ `MARTYROLOGY_ZITADEL_CLIENT_ID`): `384518610325929987`
   - Auth method: `API_AUTH_METHOD_TYPE_BASIC` — confidential client with a `client_secret`
   - **Client secret**: **out-of-band** (one-time emit — see Warning 1). Never committed to this file.
-- **Roles defined**: **none, deliberately.**
+- **Roles defined** (added by Task 6 of the authz-roles-and-grants plan; declared in `setup-zitadel.sh`'s `MARTYROLOGY_ROLES`, not yet applied to the live production Project — re-run `./setup-zitadel.sh --target production --provision-martyrology` to create them; `create_roles` is idempotent and skips roles that already exist):
 
-### Why no roles
+  | Role key | Display name | Enforced by `martyrology-api`? |
+  | --- | --- | --- |
+  | `admin` | System Administrator | Yes |
+  | `martyrology_editor` | Martyrology Editor | Yes |
+  | `developer` | Developer (API consumer) | No |
 
-`martyrology-api` contains **no Zitadel role check and no scope check anywhere**. Zitadel supplies identity only: the API POSTs the bearer token to `$issuer/oauth/v2/introspect` (HTTP Basic with `client_id`/`client_secret` — which is why this app needs `_BASIC` rather than LitCal's `PRIVATE_KEY_JWT`), takes the `sub` claim, and hands `user:<sub>` to OpenFGA. Every authorization decision is an OpenFGA `Check`.
+### What the roles gate
 
-Adding project roles "for symmetry" with the LitCal and CDCF Website projects would put claims in the token that nothing reads — an authorization signal that looks load-bearing and isn't. If the API ever grows a role check, add the roles at that point.
+`admin` and `martyrology_editor` are a **coarse population gate**, checked in `routers/curation.py` (`CURATION_ROLES`) *before* OpenFGA on every curation write route — `PUT`/`PATCH`/`DELETE` on elogia and month/day data, and `PUT`/`PATCH` on the edition itself. A caller without one of these two project roles is refused `403 .../problems/missing-role` without ever reaching an OpenFGA check.
+
+Neither role bypasses OpenFGA. A caller holding `martyrology_editor` still needs `can_edit` (or `can_admin`) from OpenFGA on the specific `edition:<id>` to actually perform the write — the project role only says "is a plausible curator of this API," not "may edit this edition." OpenFGA remains the sole authority on every per-resource decision.
+
+`developer` gates nothing today: `martyrology-api` has no API-consumer feature to check it against. It exists so the role vocabulary is uniform across CDCF properties before principals are onboarded, since issuing a role to already-onboarded principals later is the disruptive path.
+
+`create_project` in `setup-zitadel.sh` already enables `projectRoleAssertion`, so these roles appear in the access token's project-roles claim with no further Zitadel configuration.
 
 ## OpenFGA
 
@@ -111,8 +121,12 @@ Adding project roles "for symmetry" with the LitCal and CDCF Website projects wo
 ```
 type user
 
+type platform
+  define superuser: [user]
+
 type governance_body
-  define admin:  [user]
+  define on_platform: [platform]
+  define admin:  [user] or superuser from on_platform
   define editor: [user] or admin
   define reader: [user] or editor
 
@@ -125,7 +139,7 @@ type edition
 
 Permissions are granted on the **governing body**, never on an individual edition, and are inherited by every edition that body governs (`tupleToUserset` — "X from governed_by"). Grant someone `editor` on `governance_body:cei` once and they can edit every Italian edition the CEI published, including ones added later.
 
-`reader ⊂ editor ⊂ admin`: reader reads (including the copyrighted texts), editor additionally edits content, admin additionally handles edition lifecycle and is the intended role-granting authority.
+`reader ⊂ editor ⊂ admin`: reader reads (including the copyrighted texts), editor additionally edits content, admin additionally handles edition lifecycle. Role-granting authority is **the OpenFGA `admin` relation on the governance body being granted on** — reached either directly (an `admin` tuple naming that body) or through `platform:martyrology`'s `superuser` relation via `on_platform` (see "Platform type and superuser bootstrap" below) — not any Zitadel role.
 
 The API checks `can_read_texts`, `can_edit`, and `can_admin` on `edition:<edition_id>` objects — exactly as it does today. **No `martyrology-api` code change is required**: the governance indirection resolves entirely inside the model.
 
@@ -152,6 +166,31 @@ The two English editions carry **`scope: universal`** in `clbdr/data/editions.js
 They were published by a **publishing house**, not by the USCCB, so they also fall outside the Bishops' Conference model — there is no existing body they belong to.
 
 `unassigned_en_translatio` is therefore created with **no members**. Every `can_*` check against these two editions resolves to `false`: they **fail closed** until their governance is decided. This is deliberate — a placeholder, not an oversight. Do not "fix" it by pointing these editions at `editio_typica`. Resolving it means either identifying the real governing body and re-pointing the `governed_by` tuple, or deciding these editions are administered directly by the project and granting named individuals on this body.
+
+### Platform type and superuser bootstrap
+
+Added by Task 6 of the authz-roles-and-grants plan. `platform` is a new type with a single relation, `superuser`, that fans out to `admin` on every governance body through that body's new `on_platform` relation (see the model shape above). A platform superuser is therefore `admin` on `editio_typica`, `cei`, and `unassigned_en_translatio` at once, without a per-body tuple.
+
+Three structural tuples in `Martyrology.tuples.json` (alongside the eight `governed_by` tuples) put every current governance body `on_platform` of a single platform object, `platform:martyrology`:
+
+```
+platform:martyrology --on_platform--> governance_body:editio_typica
+platform:martyrology --on_platform--> governance_body:cei
+platform:martyrology --on_platform--> governance_body:unassigned_en_translatio
+```
+
+No `superuser` tuple is seeded from this file. The first superuser grant is a one-time, out-of-band bootstrap (rollout Step 6), written directly to OpenFGA rather than through the API's own grant endpoint — because that endpoint requires a body admin to already exist, and until this tuple is written there is none:
+
+```bash
+curl -sS -X POST "https://authz.catholicdigitalcommons.org/stores/$STORE/write" \
+  -H "Authorization: Bearer $OPENFGA_PRESHARED_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"writes":{"tuple_keys":[{"user":"user:<OPERATOR_SUB>","relation":"superuser","object":"platform:martyrology"}]}}'
+```
+
+This is the **only** grant ever made this way. Every grant afterwards — including granting a second superuser — goes through `/admin/permissions` once the first superuser exists (see "Grant endpoint" under Consumer integration below).
+
+**Not yet live as of this commit.** The model file here declares `platform`/`on_platform`, but the production OpenFGA store still runs the pre-Task-6 model until it is re-uploaded (rollout Step 5: `./setup-openfga.sh --target production --create-martyrology-store`), and `MARTYROLOGY_OPENFGA_MODEL_ID` in `/etc/martyrology/api.env` must be repointed at the resulting model ID (rollout Step 6) before superuser inheritance resolves for the running API. Against the old model, a pinned check for `on_platform` simply has no such relation to evaluate — checks resolve to `false`, safely but uselessly.
 
 ---
 
@@ -261,6 +300,16 @@ The API issues `POST /stores/<id>/check` with `{"tuple_key": {"user": "user:<zit
 | `can_edit` | `PUT` / `PATCH` / `DELETE` on elogia, and on month/day data |
 | `can_admin` | `PUT /{edition_id}` (create edition) and `PATCH /{edition_id}` (edition metadata) |
 
+### Grant endpoint — `/admin/permissions`
+
+`martyrology-api` exposes `GET /admin/permissions`, `POST /admin/permissions`, `DELETE /admin/permissions`, and `GET /admin/permissions/check` (`routers/admin.py`) so a governance body's own admins can manage `reader`/`editor`/`admin` grants on that body themselves, instead of an operator running raw `curl` against OpenFGA.
+
+**Scope**: every grant/revoke/list/check is scoped to a single `governance_body`, never to an edition directly, and only `reader`/`editor`/`admin` are grantable (`VALID_RELATIONS`) — `on_platform` and `superuser` are structural relations, not something this endpoint lets anyone hand out.
+
+**Authorization rule**: every route requires the caller to hold `admin` on the *target* `governance_body` — checked with `Authz.check_object(user, "admin", "governance_body:<id>")` (`_require_body_admin`) — before any read or write proceeds. Since Task 6, that check can be satisfied two ways: directly, by an `admin` tuple naming that specific body, or transitively, through `platform:martyrology`'s `superuser` relation via `on_platform` (see "Platform type and superuser bootstrap" above). A platform superuser can therefore administer every body's roster through this one endpoint; anyone else needs a direct `admin` grant on that specific body.
+
+This is also what the superuser bootstrap (Step 6) resolves: the grant endpoint requires a body admin to exist before it can be called at all, so the very first admin for a store with none has to be written directly to OpenFGA — which is exactly the one-time, out-of-band tuple write described above.
+
 ### The write split is by resource, not by HTTP verb — confirmed intended
 
 `routers/curation.py` divides content from container rather than dividing verbs:
@@ -286,3 +335,6 @@ not as "may destroy one".
 - ~~**Tuple seeding is manual.**~~ **Done** — `setup-openfga.sh` now seeds `auth/models/Martyrology.tuples.json` idempotently after the model upload, and `--seed-tuples Martyrology` re-applies it on its own. See "Tuple seeding — automated" above.
 - **Governance for the English editions** — see the `unassigned_en_translatio` section above. Resolving it means editing the `governed_by` entry in `auth/models/Martyrology.tuples.json` and re-running `--seed-tuples Martyrology`; note that re-pointing an edition **adds** the new tuple and reports the old one as drift rather than deleting it, so the stale tuple must be removed explicitly.
 - **Human role grants** — no individual has any role on any body until someone runs the grant command above. Each curator signs in to Zitadel once so a `sub` exists, then gets a tuple. These are deliberately **not** seeded from the tuples file.
+- **Platform model not yet uploaded** — Task 6 added `platform`/`on_platform` to `auth/models/Martyrology.json` and the three `on_platform` tuples to `auth/models/Martyrology.tuples.json`, but production still runs the pre-Task-6 model until `./setup-openfga.sh --target production --create-martyrology-store` is re-run (rollout Step 5) and `MARTYROLOGY_OPENFGA_MODEL_ID` is repointed in `/etc/martyrology/api.env` (rollout Step 6). See "Platform type and superuser bootstrap" above.
+- **No platform superuser exists yet** — the bootstrap tuple (rollout Step 6) has not been written. Until it is, no one holds `admin` through `platform:martyrology`, and `/admin/permissions` has no caller who can pass `_require_body_admin` except whoever already holds a direct `admin` tuple on a body (currently no one).
+- **Zitadel project roles not yet created in production** — `MARTYROLOGY_ROLES` (`admin`, `martyrology_editor`, `developer`) is declared in `setup-zitadel.sh` (Task 6) but the live `MartyrologyAPI` Project has none yet. Re-run `./setup-zitadel.sh --target production --provision-martyrology`; `create_roles` is idempotent and only adds what's missing.

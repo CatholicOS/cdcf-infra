@@ -5,9 +5,33 @@
       "type": "user"
     },
     {
+      "type": "platform",
+      "relations": {
+        "superuser": { "this": {} }
+      },
+      "metadata": {
+        "relations": {
+          "superuser": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
       "type": "governance_body",
       "relations": {
-        "admin": { "this": {} },
+        "on_platform": { "this": {} },
+        "admin": {
+          "union": {
+            "child": [
+              { "this": {} },
+              {
+                "tupleToUserset": {
+                  "tupleset": { "object": "", "relation": "on_platform" },
+                  "computedUserset": { "object": "", "relation": "superuser" }
+                }
+              }
+            ]
+          }
+        },
         "editor": {
           "union": {
             "child": [
@@ -27,6 +51,7 @@
       },
       "metadata": {
         "relations": {
+          "on_platform": { "directly_related_user_types": [{ "type": "platform" }] },
           "admin":  { "directly_related_user_types": [{ "type": "user" }] },
           "editor": { "directly_related_user_types": [{ "type": "user" }] },
           "reader": { "directly_related_user_types": [{ "type": "user" }] }

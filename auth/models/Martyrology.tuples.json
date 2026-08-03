@@ -8,6 +8,9 @@
     {"user": "governance_body:editio_typica", "relation": "governed_by", "object": "edition:martyrologium_romanum_2004"},
     {"user": "governance_body:cei", "relation": "governed_by", "object": "edition:martyrologium_romanum_2004_it_IT"},
     {"user": "governance_body:unassigned_en_translatio", "relation": "governed_by", "object": "edition:martyrologium_romanum_1914_en_unofficial"},
-    {"user": "governance_body:unassigned_en_translatio", "relation": "governed_by", "object": "edition:martyrologium_romanum_2004_en_unofficial"}
+    {"user": "governance_body:unassigned_en_translatio", "relation": "governed_by", "object": "edition:martyrologium_romanum_2004_en_unofficial"},
+    {"user": "platform:martyrology", "relation": "on_platform", "object": "governance_body:editio_typica"},
+    {"user": "platform:martyrology", "relation": "on_platform", "object": "governance_body:cei"},
+    {"user": "platform:martyrology", "relation": "on_platform", "object": "governance_body:unassigned_en_translatio"}
   ]
 }
