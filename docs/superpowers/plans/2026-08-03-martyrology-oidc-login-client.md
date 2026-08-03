@@ -255,18 +255,47 @@ problem for the CDCF website."
 
 **This is a gate.** The design rests on one unverified assumption: that `martyrology-api`, which introspects using the *API app's* credentials, accepts a token issued to a *different app in the same project*. Everything else is a variation on something already in production. If this fails, stop and escalate — do not start Task 3.
 
-- [ ] **Step 1: Run the provisioner against production**
+### Which machine runs what
+
+Only Step 1 runs on the VPS. `setup-zitadel.sh` reaches Zitadel over loopback
+(`ZITADEL_INTERNAL_URL` defaults to `http://127.0.0.1:8080`), reads the PAT from
+`/opt/cdcf-auth/runtime/zitadel-data/automation-user.pat`, and sources
+`.env.production`, which is deliberately kept `ubuntu:ubuntu` mode `0600` on the
+VPS and never leaves it. Every later step talks only to public HTTPS endpoints
+and to a browser on your own machine.
+
+| Steps | Machine | Why |
+|---|---|---|
+| 1 | **VPS**, in `/opt/cdcf-auth` | Loopback Zitadel, PAT file, `.env.production` |
+| 2-3 | **Local** | The issuer is public; the redirect target is *your* `localhost:3000` |
+| 4-8 | **Local** | Token and API endpoints are both public HTTPS |
+
+Carry the two client secrets from Step 1's VPS output into your local shell for
+Step 2.
+
+**Prerequisite:** Task 1's commit must be on `main` before Step 1 can run. The
+`sync-to-vps.yml` workflow fires on push to `main` under `auth/**` and pulls
+`--ff-only origin main` into `/opt/cdcf-auth`; a feature branch never reaches the
+VPS. Merge the Task 1 PR first. The new action is inert until invoked, so merging
+it ahead of this gate carries no risk.
+
+- [ ] **Step 1: Run the provisioner against production — ON THE VPS**
 
 ```bash
-cd /home/johnrdorazio/development/CatholicOS_org/cdcf-infra
+ssh <your-account>@<the VPS running Zitadel>
+cd /opt/cdcf-auth
+git log --oneline -1          # confirm the sync landed Task 1's commit
 ./auth/setup-zitadel.sh --target production --provision-martyrology-frontend
 ```
+
+Do not run this as the `cdcfinfra-deploy` sync user — it has no shell access and
+cannot read `.env.production` by design.
 
 Expected: two handoff blocks, `Production` and `Dev (localhost)`, each with `AUTH_ZITADEL_ID` and a one-time `AUTH_ZITADEL_SECRET`.
 
 **Capture both secrets now.** They are unrecoverable. Put them somewhere safe before the shell scrolls.
 
-- [ ] **Step 2: Build an authorization URL for the Dev app**
+- [ ] **Step 2: Build an authorization URL for the Dev app — LOCAL, and every step from here on**
 
 ```bash
 export ISSUER=https://auth.catholicdigitalcommons.org
