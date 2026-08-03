@@ -872,7 +872,7 @@ _emit_martyrology_frontend_app() {
 }
 
 do_provision_martyrology_frontend() {
-    log "Provisioning Martyrology Frontend OIDC apps"
+    log "Provisioning Martyrology Frontend OIDC app"
     local org_id
     org_id=$(find_org_id "$MARTYROLOGY_ORG_NAME")
     if [[ -z "$org_id" ]]; then
