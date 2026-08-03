@@ -229,16 +229,30 @@ Node.js → Custom environment variables:
 **Non-secret configuration — shipped via the existing `.env` mechanism**, from
 GitHub `vars`, exactly as `API_BASE` is today:
 
+- `AUTH_ZITADEL_ID` — the `client_id` emitted by
+  `--provision-martyrology-frontend` for the `Martyrology Frontend` app. An OAuth
+  client id is public by design; it is paired with, not equivalent to, the
+  secret. Auth.js cannot construct the provider without it, so omitting it
+  breaks sign-in as surely as omitting the secret does.
 - `AUTH_ZITADEL_ISSUER`
 - `AUTH_URL` — must equal `vars.SITE_URL`; a mismatch silently breaks the
   callback.
+
+Both values come from the same handoff block, so record them together and keep
+the split by sensitivity, not by source: the id is a GitHub variable, the secret
+is typed into Plesk by hand and goes nowhere else.
 
 The deploy workflow's existing smoke-test step gains one assertion:
 `GET $SITE_URL/api/auth/providers` must list the `zitadel` provider.
 
 **What that assertion does and does not prove.** It proves Auth.js booted and
-registered the provider, which catches a missing `AUTH_SECRET` and a missing
-`AUTH_ZITADEL_ISSUER`. It does **not** validate `AUTH_ZITADEL_SECRET`: the
+registered the provider, which catches a missing `AUTH_SECRET` — Auth.js refuses
+to serve without one. It does **not** validate `AUTH_ZITADEL_ISSUER`: the
+providers endpoint returns the provider's id, name, type and URLs from
+configuration and performs no OIDC discovery, so a missing or wrong issuer
+survives it and fails later at sign-in. The issuer is guarded instead by the
+deploy's own preflight, which fails the run when `vars.AUTH_ZITADEL_ISSUER` is
+empty. It does **not** validate `AUTH_ZITADEL_SECRET` either: the
 provider is constructed from configuration and is advertised whether or not the
 secret is correct, since nothing exchanges a code at discovery time. A wrong
 client secret surfaces only when someone completes a real authorization-code
@@ -288,9 +302,35 @@ This dictates the order of work:
    yet, so the browser lands on a 404 with the `code` in the address bar.
 3. `curl` the API with the resulting token against a restricted 2004 edition.
 
-If that returns unredacted text, the design is proven end to end and everything
-after it is assembly. If it does not, we find out before any frontend code is
-written. Cheap first milestone, and it retires the only real unknown.
+**Three separate assertions, not one.** Collapsing them hides which link failed:
+
+| Assertion | What it isolates |
+|---|---|
+| Introspection returns `active` | The API accepts a token minted by a sibling app at all |
+| The token carries `...:384518610174869507:roles` | Same-project membership yields the claim without an `:aud` scope (D2) |
+| The restricted edition returns non-null text | The role gate and OpenFGA agree the caller may read it |
+
+**The third assertion depends on the caller's OpenFGA tuples, not only on the
+token.** It must be run as a principal holding `can_read_texts` on the edition —
+`priest@johnromanodorazio.com` qualifies via the `superuser` tuple. Signing in as
+anyone else yields redacted text, which would look identical to the gate failing
+and would be misread as the design being wrong. Confirm the identity before
+concluding anything from a redacted response.
+
+**What passing proves, and what it does not.** It proves the token chain:
+authorization code → introspection → roles claim → role gate → OpenFGA →
+unredacted text. That is the unknown worth retiring first, and if it fails we
+find out before any frontend code is written. It does **not** prove the frontend
+wiring — the session cookie, the refresh path, the proxy attaching the header —
+none of which exists yet. Those are proven by the acceptance run in §3, after
+Tasks 3-5.
+
+**Why not run this against the deployed frontend instead.** Waiting until `main`
+is deployed with a working callback route would make the flow more realistic, but
+it inverts the point of a gate: the frontend work is precisely what this is
+meant to protect. Extracting the code from the 404 is a standard manual OIDC
+technique, and the token it yields is identical to one the deployed app would
+receive.
 
 ### Lesser risks
 

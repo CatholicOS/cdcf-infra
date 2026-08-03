@@ -428,6 +428,7 @@ shred -u /tmp/martyrology-token.json 2>/dev/null || rm -f /tmp/martyrology-token
 - Create: `martyrology-frontend/lib/zitadel-token.ts`
 - Create: `martyrology-frontend/lib/__tests__/zitadel-token.test.ts`
 - Create: `martyrology-frontend/auth.ts`
+- Create: `martyrology-frontend/lib/__tests__/auth-callbacks.test.ts`
 - Create: `martyrology-frontend/types/next-auth.d.ts`
 - Create: `martyrology-frontend/app/api/auth/[...nextauth]/route.ts`
 - Modify: `martyrology-frontend/package.json`
@@ -439,6 +440,7 @@ shred -u /tmp/martyrology-token.json 2>/dev/null || rm -f /tmp/martyrology-token
   - `refreshAccessToken(token: ZitadelToken, fetchImpl?: typeof fetch): Promise<ZitadelToken>`
   - `type ZitadelToken = { access_token?: string; refresh_token?: string; expires_at?: number; error?: string }` (`expires_at` is **seconds** since epoch, matching Auth.js's `account.expires_at`)
   - `auth()`, `handlers`, `signIn`, `signOut` exported from `@/auth`
+  - `callbacks` exported from `@/auth` — the `jwt` and `session` callbacks as a plain object, so the leak guard can call `session` directly. Exported for testability, not for reuse; nothing else should import it.
   - `session.error?: string` on the Session; `access_token`, `refresh_token`, `expires_at`, `error` on the JWT. The access token is never placed on the Session — Auth.js serves the Session as the body of `GET /api/auth/session`.
 
 All work happens in `cd /home/johnrdorazio/development/CatholicOS_org/martyrology-frontend`.
@@ -635,22 +637,12 @@ import NextAuth from "next-auth";
 import Zitadel from "next-auth/providers/zitadel";
 import { isExpired, refreshAccessToken, type ZitadelToken } from "@/lib/zitadel-token";
 
-export const { handlers, auth, signIn, signOut } = NextAuth({
-  providers: [
-    Zitadel({
-      issuer: process.env.AUTH_ZITADEL_ISSUER,
-      clientId: process.env.AUTH_ZITADEL_ID,
-      clientSecret: process.env.AUTH_ZITADEL_SECRET,
-      // offline_access is what makes Zitadel return a refresh token; without
-      // it the curator is logged out when the access token expires.
-      authorization: { params: { scope: "openid profile email offline_access" } },
-    }),
-  ],
-  // JWT strategy, not a database session: the tokens live in the encrypted
-  // httpOnly cookie Auth.js already manages. Nothing here is readable by
-  // browser JavaScript, which is the entire point of the BFF arrangement.
-  session: { strategy: "jwt" },
-  callbacks: {
+// Exported so the callbacks can be unit tested without booting a provider.
+// The test that matters asserts the access token never reaches the Session —
+// see lib/__tests__/auth-callbacks.test.ts. Auth.js serves whatever the session
+// callback returns as the body of GET /api/auth/session, so that property is a
+// security boundary, not a style choice, and it needs a permanent guard.
+export const callbacks = {
     async jwt({ token, account }) {
       // Initial sign-in: account is present exactly once.
       if (account) {
@@ -679,7 +671,24 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       session.error = current.error;
       return session;
     },
-  },
+};
+
+export const { handlers, auth, signIn, signOut } = NextAuth({
+  providers: [
+    Zitadel({
+      issuer: process.env.AUTH_ZITADEL_ISSUER,
+      clientId: process.env.AUTH_ZITADEL_ID,
+      clientSecret: process.env.AUTH_ZITADEL_SECRET,
+      // offline_access is what makes Zitadel return a refresh token; without
+      // it the curator is logged out when the access token expires.
+      authorization: { params: { scope: "openid profile email offline_access" } },
+    }),
+  ],
+  // JWT strategy, not a database session: the tokens live in the encrypted
+  // httpOnly cookie Auth.js already manages. Nothing here is readable by
+  // browser JavaScript, which is the entire point of the BFF arrangement.
+  session: { strategy: "jwt" },
+  callbacks,
 });
 ```
 
@@ -704,12 +713,62 @@ Note also that the v5 migration guide steers callers from `getToken` toward
 `auth()`. That guidance does not apply here: `auth()` returns the Session, and
 this design specifically requires a value the Session must not carry.
 
-**Regression guard, not yet written.** The leak this replaced — an access token
-on the Session — would be caught permanently by a unit test on the session
-callback, but only if `auth.ts` exports its `callbacks` object so a test can
-call it directly. That restructure is deliberately not in this plan. Until it
-exists, the property is verified manually: while signed in, `GET
-/api/auth/session` must not contain `access_token` or `accessToken`.
+- [ ] **Step 6b: Write the leak guard — the test that matters most**
+
+Create `lib/__tests__/auth-callbacks.test.ts`. This is a permanent guard on a
+security boundary, not a coverage exercise: if a later change routes the token
+back through the Session, Auth.js will publish it at `GET /api/auth/session`.
+
+```ts
+import { describe, it, expect } from "vitest";
+import { callbacks } from "@/auth";
+
+const token = {
+  access_token: "SECRET-TOKEN",
+  refresh_token: "SECRET-REFRESH",
+  expires_at: 9_999_999_999,
+  error: undefined,
+};
+
+describe("session callback", () => {
+  it("never exposes the access or refresh token on the session", async () => {
+    const session = await callbacks.session({
+      session: { user: { email: "a@b.c" }, expires: "2099-01-01" },
+      token,
+    } as never);
+
+    // Auth.js returns this object as the body of GET /api/auth/session.
+    const serialized = JSON.stringify(session);
+    expect(serialized).not.toContain("SECRET-TOKEN");
+    expect(serialized).not.toContain("SECRET-REFRESH");
+    expect(serialized).not.toContain("access_token");
+    expect(serialized).not.toContain("accessToken");
+  });
+
+  it("does pass the refresh error through, which is not sensitive", async () => {
+    const session = await callbacks.session({
+      session: { user: { email: "a@b.c" }, expires: "2099-01-01" },
+      token: { ...token, error: "RefreshAccessTokenError" },
+    } as never);
+
+    expect((session as { error?: string }).error).toBe("RefreshAccessTokenError");
+  });
+});
+```
+
+Asserting on the serialized form rather than on named properties is deliberate —
+it catches the token arriving under any key, including one a future edit invents.
+
+- [ ] **Step 6c: Run the guard**
+
+```bash
+npx vitest run lib/__tests__/auth-callbacks.test.ts
+```
+
+Expected: PASS, 2 tests. If importing `@/auth` fails for want of environment
+variables, set the four `AUTH_*` values from `.env.local` in the test run — do
+not weaken the test to avoid the import, since importing the real module is what
+makes it a guard rather than a restatement.
 
 - [ ] **Step 7: Add the type augmentation**
 
@@ -1301,6 +1360,11 @@ rather than breaking every page."
 In `martyrology-frontend` → Settings → Secrets and variables → Actions → Variables:
 
 - `AUTH_ZITADEL_ISSUER` = `https://auth.catholicdigitalcommons.org`
+- `AUTH_ZITADEL_ID` = the `client_id` from Task 2 Step 1's `Production` handoff block
+
+An OAuth client id is public by design, so it belongs with the variables rather
+than the secrets — but Auth.js cannot build the provider without it. Omitting it
+breaks sign-in exactly as omitting the secret would.
 
 `AUTH_URL` is not a separate variable — it is derived from the existing `vars.SITE_URL` at build time, which guarantees the two cannot drift.
 
@@ -1327,6 +1391,11 @@ and add the assertion alongside the existing `API_BASE` and `SITE_URL` checks:
 
 ```bash
           [ -n "$AUTH_ZITADEL_ISSUER" ] || fail "vars.AUTH_ZITADEL_ISSUER is empty (e.g. https://auth.catholicdigitalcommons.org)"
+          # The providers smoke check cannot detect a missing issuer or id —
+          # it reads configuration and performs no discovery. This preflight
+          # is the only thing standing between a blank var and a broken
+          # sign-in that deploys green.
+          [ -n "$AUTH_ZITADEL_ID" ]     || fail "vars.AUTH_ZITADEL_ID is empty (the client_id from the Martyrology Frontend handoff block)"
 ```
 
 Extend the existing confirmation echo to mention it:
@@ -1337,7 +1406,7 @@ Extend the existing confirmation echo to mention it:
 
 - [ ] **Step 4: Ship the non-secret auth config in the standalone .env**
 
-Add `AUTH_ZITADEL_ISSUER` to the build step's `env:` block, then replace the single-line `.env` write:
+Add `AUTH_ZITADEL_ISSUER` and `AUTH_ZITADEL_ID` to the build step's `env:` block, then replace the single-line `.env` write:
 
 ```bash
           printf 'API_BASE=%s\n' "$API_BASE" > .next/standalone/.env
@@ -1353,6 +1422,7 @@ with a grouped write:
           {
             printf 'API_BASE=%s\n' "$API_BASE"
             printf 'AUTH_ZITADEL_ISSUER=%s\n' "$AUTH_ZITADEL_ISSUER"
+            printf 'AUTH_ZITADEL_ID=%s\n' "$AUTH_ZITADEL_ID"
             printf 'AUTH_URL=%s\n' "$SITE_URL"
           } > .next/standalone/.env
 ```
@@ -1367,8 +1437,11 @@ Placement is not cosmetic: the editions loop ends with `exit 0` on success, so a
 
 ```bash
           # Provider-registration check only. It proves Auth.js booted and
-          # registered the provider, which catches a missing AUTH_SECRET or
-          # AUTH_ZITADEL_ISSUER. It does NOT validate AUTH_ZITADEL_SECRET —
+          # registered the provider, which catches a missing AUTH_SECRET.
+          # It does NOT validate AUTH_ZITADEL_ISSUER or AUTH_ZITADEL_ID: this
+          # endpoint reports configuration and performs no OIDC discovery, so
+          # a wrong issuer survives it. Those two are guarded by the preflight
+          # above instead. It does NOT validate AUTH_ZITADEL_SECRET either —
           # the provider is built from config and advertised whether or not
           # the secret is right, because nothing exchanges a code here. A
           # wrong secret shows up as invalid_client during a real sign-in,
@@ -1377,7 +1450,7 @@ Placement is not cosmetic: the editions loop ends with `exit 0` on success, so a
           STATUS=$(curl -sS -o "$PROV_FILE" -w '%{http_code}' \
             --connect-timeout 10 --max-time 45 "$SITE_URL/api/auth/providers" || echo "000")
           if [ "$STATUS" != "200" ] || ! grep -q '"zitadel"' "$PROV_FILE"; then
-            echo "::error::GET $SITE_URL/api/auth/providers returned $STATUS without a zitadel provider. Auth.js did not boot or did not register the provider — check AUTH_SECRET and AUTH_ZITADEL_ISSUER in Plesk → Domains → romanmartyrology.com → Node.js → Custom environment variables, then redeploy. Note this check cannot detect a wrong AUTH_ZITADEL_SECRET; that surfaces as invalid_client on a real sign-in."
+            echo "::error::GET $SITE_URL/api/auth/providers returned $STATUS without a zitadel provider. Auth.js did not boot or did not register the provider — check AUTH_SECRET in Plesk → Domains → romanmartyrology.com → Node.js → Custom environment variables, then redeploy. Note this check reads configuration only: it cannot detect a wrong AUTH_ZITADEL_ISSUER, AUTH_ZITADEL_ID or AUTH_ZITADEL_SECRET. Those surface at sign-in, as a discovery failure or invalid_client."
             head -c 300 "$PROV_FILE"; echo
             exit 1
           fi
@@ -1551,6 +1624,7 @@ Verified end to end: signed in as a user holding \`can_read_texts\`, a 2004-edit
 | §4 secrets in Plesk, non-secrets in `.env` | Task 6 Steps 2, 4 |
 | §4 `/api/auth/providers` smoke assertion | Task 6 Step 5 |
 | §5 three proxy branches | Task 4 (no session, session) + Task 3 (expiry/refresh) |
+| Access token never on the Session | Task 3 Steps 6b-6c — asserted on the serialized session, so any key name is caught |
 | §5 provisioning idempotency re-run | Task 1 Step 6 exercises argument handling; the "app exists" branch is exercised the second time Task 2 Step 1 runs |
 | §6 introspection assumption first | Task 2, gated |
 | §6 one-time secret emit | Task 1 Step 2 warnings, Task 7 Step 1 rotation note |
