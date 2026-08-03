@@ -38,6 +38,9 @@ Established 2026-08-03 by reading the repos and the provisioning script.
 | Frontend already proxies server-side | Yes — `app/api/mr/[...path]/route.ts` fetches `API_BASE`; the browser calls same-origin `/api/mr/...` via `lib/api.ts:10` |
 | CORS on `martyrology-api` | **None configured** — no `CORSMiddleware`, no `allow_origins`, anywhere in `src/` |
 | Staging environment | None, for either the frontend or the API |
+| LitCal's registered URIs | Production + staging only, no localhost — `auth/setup-zitadel.sh:308-311` |
+| LitCal's local development | A separate full stack (Postgres, Zitadel, OpenFGA, API) in `LiturgicalCalendarFrontend/docker-compose.yml`, provisioned by its own `scripts/setup-zitadel.sh` |
+| Martyrology's local stack | Does not exist |
 | Sibling precedent | `cdcf-website` runs `next-auth@5.0.0-beta.31` on `next@^16.2.9` against this same Zitadel instance |
 | Confidential Web app helper | `create_oidc_web_app` in `auth/setup-zitadel.sh` already parameterises auth method and dev mode |
 | Restricted editions | Three 2004 editions, `martyrology-api` `config.py:13-16` |
@@ -87,14 +90,31 @@ token issued to an app inside the project carries
 `urn:zitadel:iam:org:project:id:...:aud` scope required. This is how
 LiturgicalCalendar is arranged. Resolves open question 3 in the issue.
 
-### D3 — Two apps: production and dev
+### D3 — One app: production only. No localhost client in production Zitadel
 
-CDCF splits into a production app and a non-production app, the latter covering
-both staging and localhost. Martyrology has no staging environment, so the same
-split yields production plus a localhost-only dev app. The rationale for
-splitting at all still holds without staging: the secret on a development machine
-is never the production secret, and the production client never accepts an HTTP
-redirect URI.
+**Revised 2026-08-03**, after review. This section originally specified two apps,
+production plus a localhost dev client, on the CDCF Website precedent. That was
+the weaker of the two precedents available.
+
+`LITCAL_FRONTEND_URLS` (`auth/setup-zitadel.sh:308-311`) registers only
+`https://litcal.johnromanodorazio.com` and
+`https://litcal-staging.johnromanodorazio.com`. No localhost. LiturgicalCalendar
+does local development against an entirely separate Zitadel — Postgres, Zitadel,
+OpenFGA and the API in `LiturgicalCalendarFrontend/docker-compose.yml`, with its
+own `scripts/setup-zitadel.sh` provisioning that instance's project, roles and
+OIDC apps.
+
+CDCF Website does register `http://localhost:3000` as a `devMode=true` client in
+production Zitadel. Martyrology follows LitCal instead: **production Zitadel
+carries production URIs only.**
+
+Consequence, accepted: there is no local sign-in for `martyrology-frontend` until
+a local stack exists. That stack is a separate design — see Out of scope.
+
+The gate in §6 does not depend on a dev client. A manual authorization-code flow
+can use the production redirect URI: sign in, get bounced to
+`https://romanmartyrology.com/api/auth/callback/zitadel`, which 404s while
+nothing is deployed there, and read the `code` from the address bar.
 
 ### D4 — Auth.js v5, not hand-rolled OIDC
 
@@ -136,22 +156,23 @@ New constants alongside the existing Martyrology block:
 
 ```bash
 MARTYROLOGY_FRONTEND_APP_NAME="Martyrology Frontend"
-MARTYROLOGY_FRONTEND_APP_NAME_DEV="Martyrology Frontend (Dev)"
 MARTYROLOGY_FRONTEND_URLS=("https://romanmartyrology.com")
-MARTYROLOGY_FRONTEND_DEV_URLS=("http://localhost:3000")
 MARTYROLOGY_FRONTEND_CALLBACK_PATH="/api/auth/callback/zitadel"
 ```
 
-Two apps, both via the existing `create_oidc_web_app` with no changes to that
-helper:
+One app, via the existing `create_oidc_web_app` with no changes to that helper:
 
-| | Production | Dev |
-|---|---|---|
-| App name | `Martyrology Frontend` | `Martyrology Frontend (Dev)` |
-| Origin | `https://romanmartyrology.com` | `http://localhost:3000` |
-| `devMode` | `false` | `true` |
-| Auth method | `OIDC_AUTH_METHOD_TYPE_POST` | `OIDC_AUTH_METHOD_TYPE_POST` |
-| Callback | `/api/auth/callback/zitadel` | `/api/auth/callback/zitadel` |
+| | Production |
+|---|---|
+| App name | `Martyrology Frontend` |
+| Origin | `https://romanmartyrology.com` |
+| `devMode` | `false` |
+| Auth method | `OIDC_AUTH_METHOD_TYPE_POST` |
+| Callback | `/api/auth/callback/zitadel` |
+
+`_emit_martyrology_frontend_app` keeps its `dev_mode` parameter even though only
+`false` is passed today — it mirrors `_emit_cdcf_app`, and the local-stack design
+may reuse the helper against a local Zitadel.
 
 The function resolves the org via `find_org_id "$MARTYROLOGY_ORG_NAME"` and the
 project via `find_project_id`, failing with a clear message if
@@ -251,7 +272,9 @@ in production.
 This dictates the order of work:
 
 1. Provision the **dev** app only.
-2. Complete one manual authorization-code flow against `http://localhost:3000`.
+2. Complete one manual authorization-code flow using the production redirect URI.
+   Nothing is deployed at `https://romanmartyrology.com/api/auth/callback/zitadel`
+   yet, so the browser lands on a 404 with the `code` in the address bar.
 3. `curl` the API with the resulting token against a restricted 2004 edition.
 
 If that returns unredacted text, the design is proven end to end and everything
@@ -283,4 +306,12 @@ machine users also receive roles, as verified during v0.2.0 work.
 - **A CLI or loopback client** for terminal token acquisition. Considered and
   set aside; if scripted curation is wanted later, a machine user with a PAT
   works today and needs no new client.
+- **A Martyrology local development stack.** Following LitCal (D3) means local
+  sign-in requires a local Zitadel rather than a localhost client in production
+  Zitadel. That stack — Postgres, Zitadel, OpenFGA, `martyrology-api` and
+  `martyrology-frontend` in a compose file, with its own provisioning script —
+  is its own design cycle, mirroring
+  `LiturgicalCalendarFrontend/docker-compose.yml`. Until it exists there is no
+  local sign-in, which affects how §3's frontend work can be verified; see the
+  implementation plan for the current sequencing.
 - **Any change to `martyrology-api`.**

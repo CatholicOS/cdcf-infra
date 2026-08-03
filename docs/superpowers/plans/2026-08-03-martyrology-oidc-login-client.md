@@ -19,8 +19,9 @@ Every task's requirements implicitly include this section.
 - **`next-auth` is pinned to exactly `5.0.0-beta.31`** — the version `cdcf-website` runs in production against this same Zitadel issuer. Do not use `^` or `latest`; the whole justification for a beta dependency is that this exact version is proven here.
 - **Node `>=24`** (`martyrology-frontend/package.json` `engines`).
 - **All commits are GPG-signed** (`git commit -S`). Never bypass signing; if pinentry blocks, pause and let the user unlock.
-- **Zitadel app names, redirect URIs and the callback path are exact strings.** `Martyrology Frontend`, `Martyrology Frontend (Dev)`, `https://romanmartyrology.com`, `http://localhost:3000`, `/api/auth/callback/zitadel`. The callback path is determined by Auth.js's provider id (`zitadel`) — changing one without the other breaks sign-in with an opaque Zitadel error.
-- **Both apps go in the existing `MartyrologyAPI` project.** Never create a new project; the roles claim depends on this.
+- **Zitadel app name, redirect URI and callback path are exact strings.** `Martyrology Frontend`, `https://romanmartyrology.com`, `/api/auth/callback/zitadel`. The callback path is determined by Auth.js's provider id (`zitadel`) — changing one without the other breaks sign-in with an opaque Zitadel error.
+- **No localhost client in production Zitadel.** Revised 2026-08-03: this plan originally provisioned a `devMode=true` localhost app on the CDCF Website precedent. `LITCAL_FRONTEND_URLS` registers production and staging only, and LitCal develops locally against a separate Zitadel in its own compose stack. Martyrology follows LitCal. See the spec's D3.
+- **The app goes in the existing `MartyrologyAPI` project.** Never create a new project; the roles claim depends on this.
 - **Secrets never enter git or the deploy tarball.** `AUTH_SECRET` and `AUTH_ZITADEL_SECRET` are set by hand in Plesk's Node environment pane only.
 
 ## Branches
@@ -57,7 +58,16 @@ Every task's requirements implicitly include this section.
 
 ---
 
-### Task 1: Provision the two OIDC Web apps
+### Task 1: Provision the production OIDC Web app
+
+> **Revised 2026-08-03, after implementation.** This task originally created two
+> apps, production plus a `devMode=true` localhost client. The localhost client
+> was dropped — see Global Constraints. The steps below are kept as a record of
+> what was built; the amendment commit removes `MARTYROLOGY_FRONTEND_APP_NAME_DEV`,
+> `MARTYROLOGY_FRONTEND_DEV_URLS`, and the second
+> `_emit_martyrology_frontend_app` call, and corrects the `usage()` line.
+> `_emit_martyrology_frontend_app` keeps its `dev_mode` parameter for the
+> local-stack design.
 
 **Files:**
 - Modify: `cdcf-infra/auth/setup-zitadel.sh` — constants near line 744 (after `MARTYROLOGY_API_APP_NAME`), new functions before `# --- main ---`, CLI wiring at lines 73-83 (usage), 92-107 (arg parsing), 820-828 (dispatch)
@@ -267,11 +277,15 @@ and to a browser on your own machine.
 | Steps | Machine | Why |
 |---|---|---|
 | 1 | **VPS**, in `/opt/cdcf-auth` | Loopback Zitadel, PAT file, `.env.production` |
-| 2-3 | **Local** | The issuer is public; the redirect target is *your* `localhost:3000` |
-| 4-8 | **Local** | Token and API endpoints are both public HTTPS |
+| 2-8 | **Local** | Issuer, token endpoint and API are all public HTTPS; the browser is yours |
 
-Carry the two client secrets from Step 1's VPS output into your local shell for
-Step 2.
+Carry the client secret from Step 1's VPS output into your local shell for Step 2.
+
+**The flow uses the production redirect URI.** There is no localhost client (see
+Global Constraints). Nothing is deployed at
+`https://romanmartyrology.com/api/auth/callback/zitadel` yet, so after signing in
+the browser lands on a 404 with the authorization code in the address bar — which
+is all this verification needs.
 
 **Prerequisite:** Task 1's commit must be on `main` before Step 1 can run. The
 `sync-to-vps.yml` workflow fires on push to `main` under `auth/**` and pulls
@@ -291,17 +305,17 @@ git log --oneline -1          # confirm the sync landed Task 1's commit
 Do not run this as the `cdcfinfra-deploy` sync user — it has no shell access and
 cannot read `.env.production` by design.
 
-Expected: two handoff blocks, `Production` and `Dev (localhost)`, each with `AUTH_ZITADEL_ID` and a one-time `AUTH_ZITADEL_SECRET`.
+Expected: one handoff block, `Production`, with `AUTH_ZITADEL_ID` and a one-time `AUTH_ZITADEL_SECRET`.
 
-**Capture both secrets now.** They are unrecoverable. Put them somewhere safe before the shell scrolls.
+**Capture the secret now.** It is unrecoverable. Put it somewhere safe before the shell scrolls.
 
-- [ ] **Step 2: Build an authorization URL for the Dev app — LOCAL, and every step from here on**
+- [ ] **Step 2: Build an authorization URL — LOCAL, and every step from here on**
 
 ```bash
 export ISSUER=https://auth.catholicdigitalcommons.org
-export CLIENT_ID='<AUTH_ZITADEL_ID from the Dev block>'
-export CLIENT_SECRET='<AUTH_ZITADEL_SECRET from the Dev block>'
-export REDIRECT='http://localhost:3000/api/auth/callback/zitadel'
+export CLIENT_ID='<AUTH_ZITADEL_ID from the Production block>'
+export CLIENT_SECRET='<AUTH_ZITADEL_SECRET from the Production block>'
+export REDIRECT='https://romanmartyrology.com/api/auth/callback/zitadel'
 
 python3 - <<'PY'
 import os, urllib.parse
@@ -317,9 +331,9 @@ PY
 
 - [ ] **Step 3: Complete the flow in a browser**
 
-Open the printed URL, sign in as `priest@johnromanodorazio.com`. Zitadel redirects to `http://localhost:3000/api/auth/callback/zitadel?code=...&state=manual-verification`.
+Open the printed URL, sign in as `priest@johnromanodorazio.com`. Zitadel redirects to `https://romanmartyrology.com/api/auth/callback/zitadel?code=...&state=manual-verification`.
 
-Nothing is listening on port 3000, so the browser shows a connection error. **That is expected** — the authorization code is in the address bar. Copy its value.
+No Auth.js route is deployed there yet, so the browser shows a 404. **That is expected** — the authorization code is in the address bar. Copy its value.
 
 ```bash
 export CODE='<the code query parameter>'
@@ -380,6 +394,30 @@ shred -u /tmp/martyrology-token.json 2>/dev/null || rm -f /tmp/martyrology-token
 ```
 
 ---
+
+> ## Tasks 3-7 are stale pending the local-stack design
+>
+> **Added 2026-08-03.** These tasks were written assuming a localhost Zitadel
+> client existed, so several of their verification steps cannot be performed as
+> written. Do not execute them until they have been revised.
+>
+> Specifically affected:
+>
+> - **Task 3 Step 9** — the `.env.local` block uses the Dev app's credentials and
+>   runs a live sign-in against `localhost:3000`. No such client exists.
+> - **Task 5 Step 8** — the browser acceptance sequence runs against
+>   `localhost:3000` while signed in.
+> - **Task 6 Step 2** — instructs generating an `AUTH_SECRET` distinct from "the
+>   dev value".
+> - **Task 7 Step 3** — the README section documents local sign-in with the Dev
+>   client.
+>
+> The code and unit tests in Tasks 3, 4 and 5 are unaffected — they mock the
+> session and never contact Zitadel. Only the live verification steps are.
+>
+> Two ways forward, to be settled when the local-stack design lands: verify
+> against the local stack once it exists, or verify against production after
+> deploying and drop local sign-in from the plan entirely.
 
 ### Task 3: Auth.js configuration and token refresh
 
