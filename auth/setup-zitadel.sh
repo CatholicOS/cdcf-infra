@@ -27,17 +27,20 @@
 #                              client_secret ONCE on first run; re-runs against
 #                              an existing app cannot recover the secret.
 #   --provision-martyrology    Under the Martyrology Org, create the
-#                              MartyrologyAPI Project + an API OIDC app with
-#                              client_secret_basic (the API validates bearer
-#                              tokens via Zitadel's /oauth/v2/introspect,
-#                              which is HTTP-Basic authenticated with
-#                              client_id/client_secret). Deliberately creates
-#                              NO project roles: martyrology-api performs zero
-#                              Zitadel role/scope checks — every authorization
-#                              decision is an OpenFGA check against the
-#                              Martyrology store. Emits client_secret ONCE on
-#                              first run; re-runs against an existing app
-#                              cannot recover the secret.
+#                              MartyrologyAPI Project + roles (admin,
+#                              martyrology_editor, developer) + an API OIDC
+#                              app with client_secret_basic (the API
+#                              validates bearer tokens via Zitadel's
+#                              /oauth/v2/introspect, which is HTTP-Basic
+#                              authenticated with client_id/client_secret).
+#                              The admin and martyrology_editor roles are a
+#                              coarse population gate on curation writes;
+#                              neither bypasses OpenFGA, which remains the
+#                              authority on every per-resource decision
+#                              against the Martyrology store. Emits
+#                              client_secret ONCE on first run; re-runs
+#                              against an existing app cannot recover the
+#                              secret.
 #   --rename-bootstrap-admin   If the IAM admin user still has the legacy
 #                              `<username>@<orgdomain>` suffix in its
 #                              username, rename it to $ZITADEL_ADMIN_EMAIL.
@@ -74,7 +77,7 @@ Actions:
   --provision-litcal          Provision LitCal Project + roles + API app
   --provision-litcal-frontend Provision LitCal Frontend OIDC app (Web/PKCE)
   --provision-cdcf-website    Provision CDCF Website Project + roles + Web OIDC app (client_secret_post)
-  --provision-martyrology     Provision Martyrology Project + API app (client_secret_basic, NO roles)
+  --provision-martyrology     Provision Martyrology Project + roles + API app (client_secret_basic)
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
   --all                       Above six in dependency order
 
@@ -289,6 +292,14 @@ LITCAL_ROLES=("admin:System Administrator" \
               "developer:Developer (API consumer)" \
               "calendar_editor:Calendar Editor" \
               "test_editor:Test Definition Author")
+
+# `developer` is defined but enforced by nothing today: martyrology-api has no
+# API-consumer features to gate. It exists so the role vocabulary is uniform
+# across CDCF properties before principals are onboarded, since issuing a role
+# to already-onboarded principals later is the disruptive path.
+MARTYROLOGY_ROLES=("admin:System Administrator" \
+                   "martyrology_editor:Martyrology Editor" \
+                   "developer:Developer (API consumer)")
 
 # Frontend deployment URLs (prod + staging). Used to register OIDC
 # callback + post-logout URIs on the Frontend OIDC app.
@@ -731,12 +742,13 @@ do_provision_litcal() {
 MARTYROLOGY_ORG_NAME="Martyrology"
 MARTYROLOGY_PROJECT_NAME="MartyrologyAPI"
 MARTYROLOGY_API_APP_NAME="MartyrologyAPI Backend"
-# NOTE: deliberately NO project roles. martyrology-api performs zero Zitadel
-# role or scope checks — Zitadel supplies identity only (the `sub` claim), and
-# every authorization decision is an OpenFGA Check against the `Martyrology`
-# store (auth/models/Martyrology.json). Do not add a MARTYROLOGY_ROLES array
-# "for symmetry" with LitCal/CDCF: unused roles in a token are a liability, not
-# a feature. If the API ever grows a role check, add the roles then.
+# NOTE: three project roles exist (MARTYROLOGY_ROLES above): admin and
+# martyrology_editor are a coarse population gate on curation writes, checked
+# alongside — never instead of — OpenFGA. Zitadel remains identity-only
+# beyond that (the `sub` claim plus these roles); every per-resource
+# authorization decision is still an OpenFGA Check against the `Martyrology`
+# store (auth/models/Martyrology.json). `create_project` already enables
+# projectRoleAssertion, so these roles appear in tokens with no extra step.
 
 do_provision_martyrology() {
     log "Provisioning Martyrology"
@@ -750,6 +762,8 @@ do_provision_martyrology() {
 
     local project_id
     project_id=$(create_project "$org_id" "$MARTYROLOGY_PROJECT_NAME")
+
+    create_roles "$project_id" "${MARTYROLOGY_ROLES[@]}"
 
     # client_secret_basic: the API validates incoming bearer tokens by POSTing
     # to $issuer/oauth/v2/introspect with HTTP Basic (client_id, client_secret).
@@ -778,7 +792,9 @@ do_provision_martyrology() {
         warn "  $MARTYROLOGY_ORG_NAME Org → Projects → $MARTYROLOGY_PROJECT_NAME →"
         warn "  Apps → $MARTYROLOGY_API_APP_NAME → Regenerate Client Secret"
     fi
-    echo "# No project roles were created — all authorization is OpenFGA."
+    echo "# Project roles (admin, martyrology_editor, developer) were created;"
+    echo "# they are a coarse population gate only — per-resource authorization"
+    echo "# is still decided by OpenFGA."
     echo "# Run: ./setup-openfga.sh --target $TARGET --create-martyrology-store"
     echo "# for MARTYROLOGY_OPENFGA_{API_URL,STORE_ID,MODEL_ID}, then seed the"
     echo "# governed_by tuples per handoffs/martyrology.md."
