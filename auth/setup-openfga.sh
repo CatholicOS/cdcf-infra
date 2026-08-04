@@ -34,6 +34,11 @@
 # handoffs/martyrology.md. This script never deletes tuples: tuples in the store
 # that are absent from the file are reported as drift and left alone.
 #
+# Exit codes: 1 env/config, 3 store, 4 model file missing, 5 model upload,
+#   6 tuples file, 7 lock guard refused, 8 duplicate store names, 9 the OpenFGA
+#   API failed (transport error or non-2xx) — never a verdict about state,
+#   64 usage.
+#
 # Usage:
 #   ./setup-openfga.sh --target production --create-litcal-store
 #   ./setup-openfga.sh --target production --create-martyrology-store
@@ -146,19 +151,48 @@ err()  { echo "${R}    ✗${N} $*" >&2; }
 
 # --- API helper -----------------------------------------------------------
 
-# fga METHOD PATH [BODY_JSON]
+# Exit code for "the OpenFGA API did not answer, or answered with an error".
+# Distinct from the domain codes (3 store, 5 model, 6 tuples, 7 guard, 8
+# ambiguous store) so a transport/HTTP failure is never mistaken for a verdict.
+EXIT_API=9
+
+# fga METHOD PATH [BODY_JSON] -> response body on stdout; non-zero on failure.
+#
+# An OpenFGA error response is still well-formed JSON ({"code": ..., "message":
+# ...}), so a caller that only looks at the body cannot tell "the store has no
+# model" from "the request failed" — that fail-open is how a 500 on
+# ListAuthorizationModels once let a stale file upload straight over a deployed
+# model. The HTTP status is therefore captured and checked here: anything that
+# is not 2xx is reported loudly and returned as a failure, and every call site
+# turns that failure into an abort. No call site legitimately expects a non-2xx
+# (a 404 is never used here to mean "absent": store existence is established
+# via GET /stores, whose empty result is a 200 with an empty list).
 fga() {
     local method="$1" path="$2" body="${3:-}"
+    local response status payload
     if [[ -n "$body" ]]; then
-        curl -sS -X "$method" "${OPENFGA_INTERNAL_URL}${path}" \
+        response=$(curl -sS -X "$method" "${OPENFGA_INTERNAL_URL}${path}" \
             -H "Authorization: Bearer $OPENFGA_PRESHARED_KEY" \
             -H "Content-Type: application/json" \
-            -d "$body"
+            -w $'\n%{http_code}' \
+            -d "$body") || { err "OpenFGA request failed (transport): $method $path"; return 1; }
     else
-        curl -sS -X "$method" "${OPENFGA_INTERNAL_URL}${path}" \
+        response=$(curl -sS -X "$method" "${OPENFGA_INTERNAL_URL}${path}" \
             -H "Authorization: Bearer $OPENFGA_PRESHARED_KEY" \
-            -H "Content-Type: application/json"
+            -H "Content-Type: application/json" \
+            -w $'\n%{http_code}') || { err "OpenFGA request failed (transport): $method $path"; return 1; }
     fi
+    # -w appends exactly one newline + the status, so the last line is the
+    # status and everything before it is the body (which may itself contain
+    # newlines, or be empty).
+    status="${response##*$'\n'}"
+    payload="${response%$'\n'*}"
+    if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
+        err "OpenFGA $method $path returned HTTP ${status:-<none>}"
+        [[ -n "$payload" ]] && err "  response: $payload"
+        return 1
+    fi
+    printf '%s' "$payload"
 }
 
 # --- actions --------------------------------------------------------------
@@ -170,9 +204,22 @@ fga() {
 # tuples into it while the handoff records whichever id happened to sort first —
 # a split-brain that is invisible until a Check returns the wrong answer. Refuse
 # to guess instead.
+#
+# A failed listing is NOT an empty listing: reading an error body as "no such
+# store" made the script create a second store with the same name and provision
+# it, after which every later run dies in the duplicate branch below. Abort
+# instead.
 find_store_id() {
-    local name="$1" ids count
-    ids=$(fga GET /stores | jq -r --arg n "$name" '.stores[]? | select(.name == $n) | .id // empty')
+    local name="$1" body ids count
+    if ! body=$(fga GET /stores); then
+        err "Could not list stores — aborting rather than assuming '$name' does not exist."
+        exit "$EXIT_API"
+    fi
+    if ! echo "$body" | jq -e 'has("stores")' >/dev/null 2>&1; then
+        err "Unexpected body from GET /stores: $body"
+        exit "$EXIT_API"
+    fi
+    ids=$(echo "$body" | jq -r --arg n "$name" '.stores[]? | select(.name == $n) | .id // empty')
     count=$(printf '%s' "$ids" | grep -c . || true)
     if [[ "$count" -gt 1 ]]; then
         err "Found $count stores named '$name'; refusing to guess which to use:"
@@ -183,16 +230,39 @@ find_store_id() {
     printf '%s' "$ids"
 }
 
+# read_authorization_models STORE_ID -> the ListAuthorizationModels body on
+# stdout. A store with no model answers 200 with an empty list; anything else
+# (HTTP error, unparseable body, missing key) is fatal, because "no model yet"
+# is the one conclusion that must never be reached by accident — it is what
+# lets an upload proceed with the lock guard skipped entirely.
+read_authorization_models() {
+    local store_id="$1" body
+    if ! body=$(fga GET "/stores/${store_id}/authorization-models"); then
+        err "Could not read the authorization models of store ${store_id} — aborting rather"
+        err "than treating the failure as 'this store has no model yet'."
+        exit "$EXIT_API"
+    fi
+    if ! echo "$body" | jq -e 'has("authorization_models")' >/dev/null 2>&1; then
+        err "Unexpected body from GET /stores/${store_id}/authorization-models: $body"
+        exit "$EXIT_API"
+    fi
+    printf '%s' "$body"
+}
+
 # latest_model_id STORE_ID -> id of the store's current model, empty if none.
 latest_model_id() {
-    local store_id="$1"
-    fga GET "/stores/${store_id}/authorization-models" | jq -r '.authorization_models[0]?.id // empty'
+    local store_id="$1" body
+    # Deliberately not `read_authorization_models | jq`: in a pipeline the
+    # helper runs in a subshell, so its `exit` would only kill that subshell
+    # and the caller would read an empty id — the very fail-open being fixed.
+    body=$(read_authorization_models "$store_id") || exit $?
+    echo "$body" | jq -r '.authorization_models[0]?.id // empty'
 }
 
 create_or_find_store() {
     local name="$1"
     local existing_id
-    existing_id=$(find_store_id "$name")
+    existing_id=$(find_store_id "$name") || exit $?
     if [[ -n "$existing_id" ]]; then
         ok "Store already exists: $name ($existing_id)"
         echo "$existing_id"
@@ -200,7 +270,10 @@ create_or_find_store() {
     fi
     log "Creating store: $name"
     local result
-    result=$(fga POST /stores "{\"name\":\"$name\"}")
+    if ! result=$(fga POST /stores "{\"name\":\"$name\"}"); then
+        err "Failed to create store: $name"
+        exit 3
+    fi
     local store_id
     store_id=$(echo "$result" | jq -r '.id // empty')
     if [[ -z "$store_id" ]]; then
@@ -232,14 +305,26 @@ create_or_find_store() {
 # lock file should say, it reports the JSON on stderr for a human to commit
 # via a PR instead of writing it directly.
 #
-# A lock file's `store_id` scopes it to one store. Model IDs are meaningless
-# across stores — a local dev store and production can hold byte-identical
-# models under completely different IDs — so a lock recorded for a store_id
-# other than the one currently being provisioned is not applicable here: the
-# guard is skipped and no lock update is reported. Without this, the
-# production lock committed to the repo would make every local dev stack's
-# second provisioning run refuse, since the local store's (freshly generated)
-# model ID never matches production's.
+# A lock file's `store_id` scopes it to one store, giving exactly three
+# situations — every message below names which one it is in:
+#
+#   ours    — a lock exists and records THIS store_id (or, for a legacy lock,
+#             no store_id at all). The guard applies: store's latest ≠ the
+#             locked model ⇒ refuse (exit 7) unless --force-model-upload.
+#   foreign — a lock exists but records a DIFFERENT store_id. Model IDs are
+#             meaningless across stores — a local dev store and production can
+#             hold byte-identical models under completely different IDs — so
+#             this lock says nothing about the store being provisioned. The
+#             guard is bypassed completely: no refusal (neither the locked-ID
+#             one nor the no-lock one) and no lock update reported; the run
+#             falls back to the plain compare-and-upload behaviour. Without
+#             this, the production lock committed to the repo would break
+#             `docker compose up authz-seed` in every consumer's local stack
+#             the moment the model file changed.
+#   none    — no lock file at all. An unknown store is never overwritten
+#             blind: a file identical to the store's latest adopts the lock
+#             (reported for commit), a file that differs refuses (exit 7)
+#             unless --force-model-upload.
 
 lock_file_for() {
     echo "${MODELS_DIR}/${1}.lock.json"
@@ -263,8 +348,13 @@ read_lock_store_id() {
 # Never writes to disk — see the comment block above.
 report_lock_update() {
     local name="$1" store_id="$2" model_id="$3"
-    local lock_name; lock_name=$(basename "$(lock_file_for "$name")")
-    warn "Lock out of date — commit this via PR to auth/models/${lock_name}:"
+    local lock; lock=$(lock_file_for "$name")
+    local lock_name; lock_name=$(basename "$lock")
+    if [[ -f "$lock" ]]; then
+        warn "Lock out of date — commit this via PR to auth/models/${lock_name}:"
+    else
+        warn "No lock file yet — commit this via PR as auth/models/${lock_name}:"
+    fi
     jq -n --arg n "$name" --arg s "$store_id" --arg m "$model_id" \
         '{store_name: $n, store_id: $s, model_id: $m}' >&2
 }
@@ -274,39 +364,65 @@ upload_model_if_changed() {
     [[ ! -f "$model_file" ]] && { err "Model file not found: $model_file"; exit 4; }
 
     log "Checking current model in store"
+    # A failed read must never be read as "this store has no model yet" — that
+    # is the path that skips the guard entirely and uploads. read_authorization_models
+    # aborts instead.
     local existing_models
-    existing_models=$(fga GET "/stores/${store_id}/authorization-models")
+    existing_models=$(read_authorization_models "$store_id") || exit $?
     local existing_model_id
     existing_model_id=$(echo "$existing_models" | jq -r '.authorization_models[0]?.id // empty')
 
-    # lock_foreign: true when a lock file exists for $name but was recorded
-    # against a different store_id — i.e. it belongs to another environment
-    # (typically production) and says nothing about the store we're
-    # provisioning right now. Treated as if no lock existed for THIS store:
-    # the guard is skipped and no lock update is ever reported for it. Computed
-    # up front (not just when a model already exists) so the same rule governs
-    # whether the very first upload to a brand-new store gets reported too.
-    local lock_foreign="false"
+    # Which of the three lock situations are we in? (see the block comment
+    # above: ours / foreign / none). Computed up front, before we know whether
+    # the store already has a model, so the same rule governs whether the very
+    # first upload to a brand-new store gets a lock update reported too.
+    local lock_file; lock_file=$(lock_file_for "$name")
+    local lock_name; lock_name=$(basename "$lock_file")
     local locked_model_id; locked_model_id=$(read_lock_model_id "$name")
     local locked_store_id; locked_store_id=$(read_lock_store_id "$name")
-    if [[ -n "$locked_store_id" && "$locked_store_id" != "$store_id" ]]; then
-        lock_foreign="true"
-        log "Lock file for '$name' is scoped to store $locked_store_id, not $store_id — not applicable here, skipping the lock guard"
-        locked_model_id=""
+    local lock_state
+    if [[ ! -f "$lock_file" ]]; then
+        lock_state="none"
+    elif [[ -n "$locked_store_id" && "$locked_store_id" != "$store_id" ]]; then
+        lock_state="foreign"
+    else
+        lock_state="ours"
+    fi
+
+    case "$lock_state" in
+        none)
+            log "No lock file (${lock_name}) for store '$name' — this repo has no record of this store" ;;
+        foreign)
+            log "Lock file ${lock_name} records store $locked_store_id, not $store_id — it belongs to another"
+            log "environment and does not apply here: guard bypassed, no lock update will be reported" ;;
+        ours)
+            log "Lock file ${lock_name} applies to this store ($store_id) — guard active, locked model: ${locked_model_id:-<none>}" ;;
+    esac
+
+    # A lock that applies here but names no model can neither clear nor fire
+    # the guard, so it cannot be honoured — say so rather than falling through
+    # to a message claiming there is no lock file.
+    if [[ "$lock_state" == "ours" && -z "$locked_model_id" && "$FORCE_MODEL_UPLOAD" != "true" ]]; then
+        err "Lock file ${lock_name} applies to store '$name' ($store_id) but records no model_id."
+        err "It is malformed — a lock has exactly three keys: store_name, store_id, model_id."
+        err "Repair it (or delete it, so the store is treated as unknown), or re-run with"
+        err "--force-model-upload."
+        exit 7
     fi
 
     if [[ -n "$existing_model_id" ]]; then
-        if [[ -n "$locked_model_id" && "$locked_model_id" != "$existing_model_id" ]]; then
+        if [[ "$lock_state" == "ours" && -n "$locked_model_id" && "$locked_model_id" != "$existing_model_id" ]]; then
             if [[ "$FORCE_MODEL_UPLOAD" == "true" ]]; then
                 warn "Store's latest model ($existing_model_id) is not the locked one ($locked_model_id) — proceeding anyway (--force-model-upload)"
             else
-                err "Refusing to touch the model for store '$name'."
+                err "Refusing to touch the model for store '$name' ($store_id)."
                 err "  store's latest: $existing_model_id"
-                err "  lock file says: $locked_model_id"
+                err "  lock file says: $locked_model_id  (${lock_name}, scoped to this store)"
                 err "Someone uploaded a model outside this repo. Uploading now would revert it."
                 err "Resolve by syncing $(basename "$model_file") from the source of truth and updating"
-                err "$(basename "$(lock_file_for "$name")"), or re-run with --force-model-upload if you"
+                err "${lock_name} to the store's latest, or re-run with --force-model-upload if you"
                 err "really mean to replace the deployed model."
+                report_lock_update "$name" "$store_id" "$existing_model_id"
                 exit 7
             fi
         fi
@@ -328,20 +444,28 @@ upload_model_if_changed() {
         file_model=$(jq -cS ".type_definitions | $normalize" "$model_file")
         if [[ "$server_model" == "$file_model" ]]; then
             ok "Model unchanged ($existing_model_id) — no upload needed"
-            if [[ "$lock_foreign" != "true" && "$locked_model_id" != "$existing_model_id" ]]; then
+            if [[ "$lock_state" != "foreign" && "$locked_model_id" != "$existing_model_id" ]]; then
                 report_lock_update "$name" "$store_id" "$existing_model_id"
             fi
             echo "$existing_model_id"
             return 0
         fi
-        if [[ -z "$locked_model_id" && "$FORCE_MODEL_UPLOAD" != "true" ]]; then
-            err "No lock file for store '$name' and the model file differs from the store's latest ($existing_model_id)."
+        # The file differs from the store's latest. Whether that is allowed
+        # depends on which lock situation we are in.
+        if [[ "$lock_state" == "none" && "$FORCE_MODEL_UPLOAD" != "true" ]]; then
+            err "No lock file (${lock_name}) for store '$name' and the model file differs from the"
+            err "store's latest ($existing_model_id)."
             err "This repo has no record of uploading that model, so it cannot tell an intended"
             err "update from a stale file. Sync the file and re-run (an identical file adopts the"
             err "lock silently), or pass --force-model-upload to upload this file as the new model."
+            err "To adopt this store deliberately instead, commit this lock and re-run:"
+            report_lock_update "$name" "$store_id" "$existing_model_id"
             exit 7
         fi
-        warn "Model differs from file — uploading new version"
+        case "$lock_state" in
+            foreign) warn "Model differs from file — uploading new version (lock ${lock_name} is another store's; guard not applicable)" ;;
+            *)       warn "Model differs from file — uploading new version" ;;
+        esac
     else
         log "No existing model — uploading first version"
     fi
@@ -349,7 +473,10 @@ upload_model_if_changed() {
     local payload
     payload=$(jq -c '.' "$model_file")
     local result
-    result=$(fga POST "/stores/${store_id}/authorization-models" "$payload")
+    if ! result=$(fga POST "/stores/${store_id}/authorization-models" "$payload"); then
+        err "Failed to upload model to store '$name' ($store_id)"
+        exit 5
+    fi
     local model_id
     model_id=$(echo "$result" | jq -r '.authorization_model_id // empty')
     if [[ -z "$model_id" ]]; then
@@ -357,7 +484,7 @@ upload_model_if_changed() {
         exit 5
     fi
     ok "Uploaded model: $model_id"
-    [[ "$lock_foreign" == "true" ]] || report_lock_update "$name" "$store_id" "$model_id"
+    [[ "$lock_state" == "foreign" ]] || report_lock_update "$name" "$store_id" "$model_id"
     echo "$model_id"
 }
 
@@ -378,11 +505,11 @@ read_all_tuples() {
         body=$(jq -cn --argjson ps "$TUPLE_READ_PAGE" --arg t "$token" \
             'if $t == "" then {page_size:$ps} else {page_size:$ps, continuation_token:$t} end')
         if ! page=$(fga POST "/stores/${store_id}/read" "$body"); then
-            err "Read request failed (transport) against store ${store_id}"
-            exit 7
+            err "Read request failed against store ${store_id}"
+            exit "$EXIT_API"
         fi
-        # A non-200 from OpenFGA still comes back as a 200-shaped curl success,
-        # so the body — not the exit status — is what proves the read worked.
+        # Belt and braces on top of fga's status check: a 200 body that is not
+        # shaped like a read response is still not a usable read.
         if ! page_tuples=$(echo "$page" | jq -ce '[.tuples[]? | .key | {user, relation, object}]' 2>/dev/null) \
            || ! echo "$page" | jq -e 'has("tuples")' >/dev/null 2>&1; then
             err "Read returned an unexpected body: $page"
@@ -456,7 +583,7 @@ seed_tuples_if_present() {
     # transactional, so one duplicate would fail the whole batch. Read first,
     # write only the difference.
     local existing_json
-    existing_json=$(read_all_tuples "$store_id")
+    existing_json=$(read_all_tuples "$store_id") || exit $?
 
     local key_expr='"\(.user)|\(.relation)|\(.object)"'
     local missing_json
@@ -477,12 +604,12 @@ seed_tuples_if_present() {
                 --argjson s "$i" --argjson c "$TUPLE_WRITE_CHUNK" --arg m "$model_id" \
                 '{writes: {tuple_keys: .[$s : $s + $c]}, authorization_model_id: $m}')
             if ! result=$(fga POST "/stores/${store_id}/write" "$payload"); then
-                err "Tuple write failed (transport) against store ${store_id}"
-                exit 7
+                err "Tuple write failed against store ${store_id}"
+                exit "$EXIT_API"
             fi
-            # A successful write returns `{}`. Anything with a `code`/`message`
-            # is an OpenFGA error delivered with a non-2xx status — curl -sS
-            # exits 0 on those, so the body has to be inspected explicitly.
+            # A successful write returns `{}`. Belt and braces on top of fga's
+            # status check: anything carrying a `code`/`message` is an OpenFGA
+            # error, whatever status accompanied it.
             if ! echo "$result" | jq -e . >/dev/null 2>&1 \
                || [[ -n "$(echo "$result" | jq -r '.code // .message // empty')" ]]; then
                 err "Tuple write rejected by OpenFGA: $result"
@@ -522,8 +649,8 @@ do_create_store() {
     log "Provisioning store '$name' (model: $model_file)"
 
     local store_id model_id
-    store_id=$(create_or_find_store "$name")
-    model_id=$(upload_model_if_changed "$store_id" "$model_file" "$name")
+    store_id=$(create_or_find_store "$name") || exit $?
+    model_id=$(upload_model_if_changed "$store_id" "$model_file" "$name") || exit $?
     seed_tuples_if_present "$store_id" "$model_id" "$name"
 
     echo
@@ -546,14 +673,14 @@ do_seed_tuples() {
     fi
 
     local store_id model_id
-    store_id=$(find_store_id "$name")
+    store_id=$(find_store_id "$name") || exit $?
     if [[ -z "$store_id" ]]; then
         err "Store not found: $name — run --create-store $name first"
         exit 3
     fi
     ok "Store: $name ($store_id)"
 
-    model_id=$(latest_model_id "$store_id")
+    model_id=$(latest_model_id "$store_id") || exit $?
     if [[ -z "$model_id" ]]; then
         err "Store '$name' has no authorization model — run --create-store $name first"
         exit 5

@@ -45,9 +45,15 @@ Plesk's Docker extension picks up `docker-compose.prod.yml` at the path above vi
   the provisioner refuses (exit 7) and prints the lock JSON on stderr for a
   human to commit via PR, rather than uploading over an out-of-band change —
   `--force-model-upload` overrides when replacing the deployed model is the
-  actual intent. The guard only applies when the lock's `store_id` matches the
-  store being provisioned, so a lock committed for one environment (e.g.
-  production) has no effect on another (e.g. a local dev stack's own store).
+  actual intent — and note the check runs before the file-vs-store comparison,
+  so a stale lock refuses even when the model file matches what is deployed.
+  The guard only applies when the lock's `store_id` matches the store being
+  provisioned: a lock committed for one environment (e.g. production) is
+  bypassed entirely on another (e.g. a local dev stack's own store), which
+  there behaves as plain compare-and-upload. With no lock file at all, an
+  identical file adopts the lock and a differing file refuses. A failed
+  OpenFGA request aborts the run (exit 9) — it is never read as "store absent"
+  or "no model yet".
 
 ## Prerequisites
 
