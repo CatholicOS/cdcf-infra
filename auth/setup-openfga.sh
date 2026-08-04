@@ -23,7 +23,9 @@
 #                          or the tuples file is missing.
 #   --force-model-upload   Override the lock-file guard (see auth/models/*.lock.json).
 #                          Without it, a store whose latest model was not uploaded by
-#                          this repo is left alone and the run exits non-zero.
+#                          this repo is left alone and the run exits non-zero. The
+#                          script never writes a lock file itself — it reports the
+#                          JSON to commit via PR whenever one needs to change.
 #
 # Structural tuples only: a `.tuples.json` file carries wiring the model is
 # useless without (for Martyrology, `edition → governed_by → governance_body`).
@@ -221,6 +223,23 @@ create_or_find_store() {
 #
 # Three fields only. No timestamp or commit hash: the lock file is committed,
 # so `git log auth/models/<name>.lock.json` is the provenance record.
+#
+# This script never WRITES a lock file — it only reads one. On the production
+# VPS, auth/models/ is a git checkout owned by cdcfinfra-deploy and synced via
+# `git pull --ff-only`, while the provisioner runs as ubuntu: it cannot write
+# there, and even if it could, writing a tracked file into that checkout would
+# dirty it and break the next sync. When this repo's action changes what a
+# lock file should say, it reports the JSON on stderr for a human to commit
+# via a PR instead of writing it directly.
+#
+# A lock file's `store_id` scopes it to one store. Model IDs are meaningless
+# across stores — a local dev store and production can hold byte-identical
+# models under completely different IDs — so a lock recorded for a store_id
+# other than the one currently being provisioned is not applicable here: the
+# guard is skipped and no lock update is reported. Without this, the
+# production lock committed to the repo would make every local dev stack's
+# second provisioning run refuse, since the local store's (freshly generated)
+# model ID never matches production's.
 
 lock_file_for() {
     echo "${MODELS_DIR}/${1}.lock.json"
@@ -232,12 +251,22 @@ read_lock_model_id() {
     jq -r '.model_id // empty' "$lock" 2>/dev/null || echo ""
 }
 
-write_lock() {
+read_lock_store_id() {
+    local lock; lock=$(lock_file_for "$1")
+    [[ -f "$lock" ]] || { echo ""; return 0; }
+    jq -r '.store_id // empty' "$lock" 2>/dev/null || echo ""
+}
+
+# report_lock_update NAME STORE_ID MODEL_ID
+#
+# Prints (to stderr) the lock file content that should be committed for NAME.
+# Never writes to disk — see the comment block above.
+report_lock_update() {
     local name="$1" store_id="$2" model_id="$3"
-    local lock; lock=$(lock_file_for "$name")
+    local lock_name; lock_name=$(basename "$(lock_file_for "$name")")
+    warn "Lock out of date — commit this via PR to auth/models/${lock_name}:"
     jq -n --arg n "$name" --arg s "$store_id" --arg m "$model_id" \
-        '{store_name: $n, store_id: $s, model_id: $m}' > "$lock"
-    ok "Lock updated: $(basename "$lock") → $model_id"
+        '{store_name: $n, store_id: $s, model_id: $m}' >&2
 }
 
 upload_model_if_changed() {
@@ -250,8 +279,23 @@ upload_model_if_changed() {
     local existing_model_id
     existing_model_id=$(echo "$existing_models" | jq -r '.authorization_models[0]?.id // empty')
 
+    # lock_foreign: true when a lock file exists for $name but was recorded
+    # against a different store_id — i.e. it belongs to another environment
+    # (typically production) and says nothing about the store we're
+    # provisioning right now. Treated as if no lock existed for THIS store:
+    # the guard is skipped and no lock update is ever reported for it. Computed
+    # up front (not just when a model already exists) so the same rule governs
+    # whether the very first upload to a brand-new store gets reported too.
+    local lock_foreign="false"
+    local locked_model_id; locked_model_id=$(read_lock_model_id "$name")
+    local locked_store_id; locked_store_id=$(read_lock_store_id "$name")
+    if [[ -n "$locked_store_id" && "$locked_store_id" != "$store_id" ]]; then
+        lock_foreign="true"
+        log "Lock file for '$name' is scoped to store $locked_store_id, not $store_id — not applicable here, skipping the lock guard"
+        locked_model_id=""
+    fi
+
     if [[ -n "$existing_model_id" ]]; then
-        local locked_model_id; locked_model_id=$(read_lock_model_id "$name")
         if [[ -n "$locked_model_id" && "$locked_model_id" != "$existing_model_id" ]]; then
             if [[ "$FORCE_MODEL_UPLOAD" == "true" ]]; then
                 warn "Store's latest model ($existing_model_id) is not the locked one ($locked_model_id) — proceeding anyway (--force-model-upload)"
@@ -284,8 +328,9 @@ upload_model_if_changed() {
         file_model=$(jq -cS ".type_definitions | $normalize" "$model_file")
         if [[ "$server_model" == "$file_model" ]]; then
             ok "Model unchanged ($existing_model_id) — no upload needed"
-            [[ "$(read_lock_model_id "$name")" == "$existing_model_id" ]] \
-                || write_lock "$name" "$store_id" "$existing_model_id"
+            if [[ "$lock_foreign" != "true" && "$locked_model_id" != "$existing_model_id" ]]; then
+                report_lock_update "$name" "$store_id" "$existing_model_id"
+            fi
             echo "$existing_model_id"
             return 0
         fi
@@ -312,7 +357,7 @@ upload_model_if_changed() {
         exit 5
     fi
     ok "Uploaded model: $model_id"
-    write_lock "$name" "$store_id" "$model_id"
+    [[ "$lock_foreign" == "true" ]] || report_lock_update "$name" "$store_id" "$model_id"
     echo "$model_id"
 }
 
