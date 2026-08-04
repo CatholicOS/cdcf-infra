@@ -76,14 +76,18 @@ The invariant centralization creates is *cdcf-infra is the only writer of models
 
 Three fields, deliberately. No commit hash or timestamp: the lock file is committed, so `git log auth/models/<Store>.lock.json` already gives the provenance chain and does it more reliably than the script could — on the VPS the worktree may sit at a different commit than the one that authored the model, or be dirty. Recording state needed to detect drift, and nothing about the file itself, is what keeps lockfiles honest.
 
-`upload_model_if_changed` checks it before doing anything:
+`upload_model_if_changed` checks it before doing anything — but the script itself never writes the file. `auth/models/` on the VPS is a git checkout owned by the `cdcfinfra-deploy` sync user, while the provisioner runs as `ubuntu`; it cannot write there, and even if it could, writing a tracked file into that checkout would dirty it and break the next `sync-to-vps.yml` pull (`--ff-only`). So when the lock needs to change, the script prints the JSON on stderr for a human to commit via PR — the repository is the only writer, and CI's pull is what carries a new lock to the VPS:
 
 | Store's latest model ID | Lock | Behaviour |
 | --- | --- | --- |
-| matches lock | present | Today's behaviour: compare file to store, upload if changed, rewrite lock. |
-| ≠ lock | present | **Refuse and report**, printing both IDs. `--force-model-upload` overrides. |
-| — | absent, file matches store | Adopt: write the lock, continue. |
-| — | absent, file differs | Refuse; require `--force-model-upload`. |
+| matches lock | present | Today's behaviour: compare file to store, upload if changed, report the new lock JSON to commit. |
+| ≠ lock | present | **Refuse and report** (exit 7), printing both IDs. `--force-model-upload` overrides. |
+| — | absent, file matches store | Adopt: report the lock JSON to commit, continue. |
+| — | absent, file differs | Refuse (exit 7); require `--force-model-upload`. |
+
+The guard is also scoped to the lock's own `store_id`: a lock recorded for a `store_id` other than the one being provisioned right now belongs to another environment and is skipped entirely — no refusal, no lock update reported. Without this, a lock committed for production would make every local dev stack's second provisioning run refuse, since a local store's freshly generated model ID never matches production's.
+
+Schema is exactly three fields — `store_name`, `store_id`, `model_id` — nothing else.
 
 Against the 2026-08-04 incident this fires correctly: lock `01KRSCF4K9…` vs store `01KW4FW2ZC…` → refuse instead of regress.
 
