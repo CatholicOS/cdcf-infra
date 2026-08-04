@@ -5,8 +5,16 @@
 # Reads credentials from .env.production (on the VPS) or .env.local (for
 # pointing a dev-side script at a remote Zitadel). The automation PAT is
 # loaded from the Zitadel data dir's automation-user.pat file written on
-# first boot. Honors the --target {local,production} convention from
+# first boot. Honors the --target {local,staging,production} convention from
 # scripts/cdcf_api.py in the cdcf-website repo.
+#
+# Targets select which env file is sourced, and with it which Zitadel the
+# script talks to. `staging` and `production` both resolve to the SAME
+# production Zitadel: the staging frontends (litcal-staging.*,
+# staging.catholicdigitalcommons.org) authenticate against it, which is why
+# their origins are registered there. `local` is a separate Zitadel in its
+# own compose stack. See issue #20 for why the URL-bearing actions do not
+# yet vary their registered origins by target.
 #
 # Actions:
 #   --create-orgs              Create the four umbrella Orgs idempotently.
@@ -69,7 +77,12 @@ ACTIONS=()
 
 usage() {
     cat >&2 <<EOF
-Usage: $0 --target {local,production} ACTION [ACTION ...]
+Usage: $0 --target {local,staging,production} ACTION [ACTION ...]
+
+Targets:
+  local       Separate local Zitadel (own compose stack), via .env.local
+  staging     Production Zitadel, via .env.staging
+  production  Production Zitadel, via .env.production
 
 Actions:
   --create-orgs               Create CDCF, LiturgicalCalendar, BibleGet, OntoKit, Martyrology (idempotent)
@@ -117,6 +130,10 @@ done
 case "$TARGET" in
     local)
         ENV_FILE="${ENV_FILE:-.env.local}"
+        ZITADEL_INTERNAL_URL_DEFAULT="http://127.0.0.1:8080"
+        ;;
+    staging)
+        ENV_FILE="${ENV_FILE:-.env.staging}"
         ZITADEL_INTERNAL_URL_DEFAULT="http://127.0.0.1:8080"
         ;;
     production)
