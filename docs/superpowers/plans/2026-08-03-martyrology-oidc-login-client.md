@@ -395,32 +395,38 @@ shred -u /tmp/martyrology-token.json 2>/dev/null || rm -f /tmp/martyrology-token
 
 ---
 
-> ## Tasks 3-7 are stale pending the local-stack design
+> ## Tasks 3-7: local verification now runs against the local stack
 >
-> **Added 2026-08-03.** These tasks were written assuming a localhost Zitadel
-> client existed, so several of their verification steps cannot be performed as
-> written. Do not execute them until they have been revised.
+> **Added 2026-08-03, resolved 2026-08-04.** These tasks were written assuming a
+> localhost Zitadel client existed. It does — but in the *local* Zitadel, not the
+> production one, which is the spec's D3 rather than a departure from it.
 >
-> Specifically affected:
+> Two things landed since:
 >
-> - **Task 3 Step 9** — the `.env.local` block uses the Dev app's credentials and
->   runs a live sign-in against `localhost:3000`. No such client exists.
-> - **Task 5 Step 8** — the browser acceptance sequence runs against
->   `localhost:3000` while signed in.
-> - **Task 6 Step 2** — instructs generating an `AUTH_SECRET` distinct from "the
->   dev value".
-> - **Task 7 Step 1** — the handoff table lists both apps.
-> - **Task 7 Step 3** — the README section documents local sign-in with the Dev
->   client.
-> - **Task 7 Step 5** — the issue-close comment claims two apps exist and that
->   "both apps live in the MartyrologyAPI project". Do not post it as written.
+> - **`--provision-martyrology-frontend` is target-aware** (PR #23). `--target local`
+>   registers `http://localhost:3000/api/auth/callback/zitadel` with `devMode=true`
+>   against a local Zitadel; `--target production` is byte-identical to before.
+> - **The local stack exists**, built on unmerged `feat/local-dev-stack` branches
+>   in `martyrology-api` and `martyrology-frontend` — see `martyrology-api`'s
+>   `docs/superpowers/specs/2026-08-04-local-development-stack-design.md`, and the
+>   bring-up in `martyrology-frontend`'s README. It is not yet on either repo's
+>   `main`.
 >
-> The code and unit tests in Tasks 3, 4 and 5 are unaffected — they mock the
-> session and never contact Zitadel. Only the live verification steps are.
+> So the affected steps are performed as written, against
+> `http://localhost:3000` with the local stack running, taking
+> `AUTH_ZITADEL_ID` / `AUTH_ZITADEL_SECRET` from the `.env` that
+> `./scripts/setup-stack.sh --update-env` writes:
 >
-> Two ways forward, to be settled when the local-stack design lands: verify
-> against the local stack once it exists, or verify against production after
-> deploying and drop local sign-in from the plan entirely.
+> - **Task 3 Step 9**, **Task 5 Step 8** — run against the local stack.
+> - **Task 6 Step 2** — "the dev value" means the local stack's `AUTH_SECRET`,
+>   which `setup-stack.sh` generates. Production's must differ.
+> - **Task 7 Steps 1, 3, 5** — there is **one app per instance**, not two apps in
+>   one instance. The handoff table lists the production app; local sign-in is
+>   documented as a property of the local stack. Do not claim "both apps live in
+>   the MartyrologyAPI project" of a single Zitadel.
+>
+> The code and unit tests in Tasks 3, 4 and 5 were never affected — they mock the
+> session and never contact Zitadel.
 
 ### Task 3: Auth.js configuration and token refresh
 
