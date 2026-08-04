@@ -137,6 +137,10 @@ TUPLE_READ_PAGE=100
 # Hard stop on the read pagination loop, so a server that keeps handing back
 # a continuation token can never spin forever.
 TUPLE_READ_MAX_PAGES=1000
+# Page size for listing stores (ListStores defaults to 50 and caps page_size
+# at 100), and the same hard stop for its pagination loop.
+STORE_LIST_PAGE=100
+STORE_LIST_MAX_PAGES=1000
 
 if [[ -t 1 ]]; then
     R=$'\033[0;31m'; G=$'\033[0;32m'; Y=$'\033[1;33m'; B=$'\033[0;34m'; N=$'\033[0m'
@@ -197,29 +201,77 @@ fga() {
 
 # --- actions --------------------------------------------------------------
 
+# list_all_stores -> JSON array of store objects on stdout.
+#
+# ListStores is paginated (default page size 50), so a single unpaged GET /stores
+# is only ever a view of the first page. A store past that page read as ABSENT:
+# create_or_find_store then created a second store with the same name, and a
+# third on the next run, while the duplicate guard in find_store_id — also
+# looking at page 1 only — never saw them. Page through the whole list instead,
+# the same way read_all_tuples pages through POST /stores/{id}/read, hard page
+# cap and stall detection included.
+#
+# Every failure here is EXIT_API: a listing that could not be completed is a
+# failed API call, and must never reach a caller as "the store is not there".
+list_all_stores() {
+    local token="" prev_token="" page page_stores path
+    local acc="[]"
+    local pages=0
+
+    while :; do
+        pages=$((pages + 1))
+        if [[ $pages -gt $STORE_LIST_MAX_PAGES ]]; then
+            err "Store listing exceeded ${STORE_LIST_MAX_PAGES} pages — refusing to continue"
+            exit "$EXIT_API"
+        fi
+        path="/stores?page_size=${STORE_LIST_PAGE}"
+        # Continuation tokens are base64 and routinely carry '=', '+' and '/',
+        # none of which survive a query string unencoded.
+        if [[ -n "$token" ]]; then
+            path+="&continuation_token=$(jq -rn --arg t "$token" '$t|@uri')"
+        fi
+        if ! page=$(fga GET "$path"); then
+            err "Could not list stores — aborting rather than assuming a store does not exist."
+            exit "$EXIT_API"
+        fi
+        # Belt and braces on top of fga's status check: a 200 body that is not
+        # shaped like a store listing is still not a usable listing.
+        if ! page_stores=$(echo "$page" | jq -ce '[.stores[]?]' 2>/dev/null) \
+           || ! echo "$page" | jq -e 'has("stores")' >/dev/null 2>&1; then
+            err "Unexpected body from GET /stores: $page"
+            exit "$EXIT_API"
+        fi
+        acc=$(jq -cn --argjson a "$acc" --argjson b "$page_stores" '$a + $b')
+
+        prev_token="$token"
+        token=$(echo "$page" | jq -r '.continuation_token // empty')
+        [[ -z "$token" ]] && break
+        if [[ "$token" == "$prev_token" ]]; then
+            err "Store listing pagination stalled — server repeated continuation token"
+            exit "$EXIT_API"
+        fi
+    done
+
+    echo "$acc"
+}
+
 # find_store_id NAME -> store id on stdout, empty if the store does not exist.
 # OpenFGA does NOT enforce unique store names, so a name can legitimately match
 # more than one store (two provisioning runs racing, or a store created by hand).
 # Silently taking the first match would upload a model into one store and seed
 # tuples into it while the handoff records whichever id happened to sort first —
 # a split-brain that is invisible until a Check returns the wrong answer. Refuse
-# to guess instead.
+# to guess instead. The search covers the full paginated listing, so duplicates
+# are caught wherever they sit in it.
 #
 # A failed listing is NOT an empty listing: reading an error body as "no such
 # store" made the script create a second store with the same name and provision
-# it, after which every later run dies in the duplicate branch below. Abort
-# instead.
+# it, after which every later run dies in the duplicate branch below. list_all_stores
+# aborts instead.
 find_store_id() {
-    local name="$1" body ids count
-    if ! body=$(fga GET /stores); then
-        err "Could not list stores — aborting rather than assuming '$name' does not exist."
-        exit "$EXIT_API"
-    fi
-    if ! echo "$body" | jq -e 'has("stores")' >/dev/null 2>&1; then
-        err "Unexpected body from GET /stores: $body"
-        exit "$EXIT_API"
-    fi
-    ids=$(echo "$body" | jq -r --arg n "$name" '.stores[]? | select(.name == $n) | .id // empty')
+    local name="$1" stores ids count
+    stores=$(list_all_stores) || exit $?
+    ids=$(echo "$stores" | jq -r --arg n "$name" '.[] | select(.name == $n) | .id // empty')
     count=$(printf '%s' "$ids" | grep -c . || true)
     if [[ "$count" -gt 1 ]]; then
         err "Found $count stores named '$name'; refusing to guess which to use:"
