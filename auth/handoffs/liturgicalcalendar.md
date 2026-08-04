@@ -40,7 +40,7 @@ Everything in this Zitadel section was re-verified against production on 2026-08
 - **Authorization model ID**: `01KW4FW2ZCT1E693PY8D9TJEFM` — the latest model in the store, uploaded 2026-06-27T12:11Z. Supersedes `01KW40P7AM87W4Y864D2RZDR0B` (same day, 07:46Z) and `01KRSCF4K9W2EWZ1X2PP1QVH3B` (the original 2026-05-16 upload this handoff used to record).
 - **Model source**: **`LiturgicalCalendarAPI/scripts/openfga-model.json` — that repo, not this one.** Schema 1.1. Deployed types: `user`, `wider_region`, `national_calendar`, `diocesan_calendar`, `general_roman_calendar`, `national_calendar_test`, `diocesan_calendar_test`, `general_roman_calendar_test`; relations are `admin`/`editor`/`viewer` throughout, plus `member_nation` on `wider_region`. Verified against the live store on 2026-08-04.
 
-  Both `test_definition` and the `deleter` relation are **gone** — dropped by the LitCal team in `ea6fdd6c` ("drop test_definition type") and `76033bfb` ("admin-superset model … drop deleter"), with the calendar-scoped test types added in `2060b19a`. Any consumer still checking `deleter` or `test_definition` is checking against a model that no longer exists.
+  Both `test_definition` and the `deleter` relation are **gone** — dropped by the LitCal team in `ea6fdd6c` ("drop test_definition type") and `76033bfb` ("admin-superset model … drop deleter"), with the calendar-scoped test types added in `2060b19a`. Any consumer still checking `deleter` or `test_definition` is checking against a relation that no longer exists **in the current/latest model** — consumers pinned to an earlier model ID (e.g. `01KRSCF4K9W2EWZ1X2PP1QVH3B`) still see it, since a pin names a specific model ID.
 
 ### ⚠ The copy in this repo is stale — do not re-run `--create-litcal-store`
 

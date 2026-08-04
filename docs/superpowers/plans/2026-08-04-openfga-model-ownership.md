@@ -134,7 +134,7 @@ wider_region, drops test_definition and the deleter relation."
 In-memory datastore, so nothing persists and no database is needed:
 
 ```bash
-docker run --rm -d --name fga-test -p 18081:8080 \
+docker run --rm -d --name fga-test -p 127.0.0.1:18081:8080 \
   -e OPENFGA_AUTHN_METHOD=preshared \
   -e OPENFGA_AUTHN_PRESHARED_KEYS=test-key \
   openfga/openfga:v1.15.1 run
@@ -338,7 +338,7 @@ In the argument `while` loop, add before `-h|--help)`:
 
 In `usage()`, under `Actions:`, add:
 
-```
+```text
   --force-model-upload      Upload the model file even when the store's latest model
                             is not the one recorded in auth/models/NAME.lock.json
                             (i.e. someone uploaded out-of-band). Off by default.
@@ -354,7 +354,21 @@ And in the header comment block, under the `--seed-tuples` entry, add:
 
 - [ ] **Step 10: Verify the guard blocks the regression**
 
-The throwaway store is still in the out-of-band state from Step 3, and no lock file exists yet, so the adoption branch must fire:
+Step 3's own "dangerous run" already re-uploaded a copy matching the repo
+file, so by now the store's latest model is back in sync with
+`models/LiturgicalCalendar.json` and no lock file was ever written — the
+"unchanged" branch would fire, not the no-lock refusal branch this step is
+supposed to exercise. Recreate the out-of-band mismatch first, by re-uploading
+the same modified model Step 3 used:
+
+```bash
+STORE=$(curl -sS -H "Authorization: Bearer test-key" http://127.0.0.1:18081/stores | jq -r '.stores[] | select(.name=="LiturgicalCalendar") | .id')
+OOB_MODEL=$(curl -sS -X POST "http://127.0.0.1:18081/stores/$STORE/authorization-models" \
+  -H "Authorization: Bearer test-key" -H 'Content-Type: application/json' -d @/tmp/oob-model.json | jq -r .authorization_model_id)
+echo "out-of-band model: $OOB_MODEL"
+```
+
+No lock file exists yet, so the adoption branch must fire:
 
 ```bash
 cd auth && ./setup-openfga.sh --target local --create-store LiturgicalCalendar; echo "exit=$?"; cd ..
@@ -363,11 +377,10 @@ cd auth && ./setup-openfga.sh --target local --create-store LiturgicalCalendar; 
 Expected: `✗ No lock file for store 'LiturgicalCalendar' …`, `exit=7`, and **no** new model uploaded. Confirm the store's latest model is unchanged:
 
 ```bash
-STORE=$(curl -sS -H "Authorization: Bearer test-key" http://127.0.0.1:18081/stores | jq -r '.stores[] | select(.name=="LiturgicalCalendar") | .id')
 curl -sS -H "Authorization: Bearer test-key" "http://127.0.0.1:18081/stores/$STORE/authorization-models?page_size=1" | jq -r '.authorization_models[0].id'
 ```
 
-Expected: still the out-of-band model ID from Step 3.
+Expected: still `$OOB_MODEL`, the out-of-band model just re-uploaded above.
 
 - [ ] **Step 11: Verify `--force-model-upload` overrides**
 
@@ -445,7 +458,40 @@ EOS
 
 Expected: `01KRSCF4GVX0X4ZNXXJQEC4XXJ -> 01KW4FW2ZCT1E693PY8D9TJEFM` and `01KZ1M9NJR1JHTMTV091X5DMYZ -> 01KZ3VZC7RAAX7TEMMVAYEBPW8`. **If either differs, stop** — something changed since 2026-08-04; use the values you just read and note the discrepancy in the commit message.
 
-- [ ] **Step 2: Write the lock files**
+- [ ] **Step 2: Confirm deployed model CONTENT matches the committed file, not just the ID**
+
+A matching ID is not enough — locking a model whose committed file doesn't
+actually match what's deployed would make Step 3's lock a false record. Fetch
+each deployed model's full `type_definitions` and compare against the repo
+file using the exact same normalization `upload_model_if_changed` uses (see
+`auth/setup-openfga.sh`'s `normalize` variable), so this check and the guard
+it feeds agree on what "matches" means:
+
+```bash
+KEY=$(ssh ubuntu@catholicdigitalcommons.org \
+  "grep -m1 '^OPENFGA_PRESHARED_KEY=' /opt/cdcf-auth/auth/.env.production | cut -d= -f2- | tr -d '\"'")
+NORMALIZE='walk(if type == "object" then with_entries(select(.value != null and .value != "" and (.value != {} or .key == "this"))) else . end)'
+
+for pair in "LiturgicalCalendar:01KRSCF4GVX0X4ZNXXJQEC4XXJ" "Martyrology:01KZ1M9NJR1JHTMTV091X5DMYZ"; do
+  name=${pair%%:*}; store=${pair##*:}
+  ssh ubuntu@catholicdigitalcommons.org \
+    "curl -sS 'http://127.0.0.1:8081/stores/$store/authorization-models' -H 'Authorization: Bearer $KEY'" \
+    > "/tmp/deployed-$name.json"
+  deployed=$(jq -cS ".authorization_models[0].type_definitions | $NORMALIZE" "/tmp/deployed-$name.json")
+  file=$(jq -cS ".type_definitions | $NORMALIZE" "auth/models/$name.json")
+  if [[ "$deployed" == "$file" ]]; then
+    echo "$name: content matches — safe to lock"
+  else
+    echo "$name: CONTENT MISMATCH — do NOT write a lock for this store; sync auth/models/$name.json from the deployed model (or investigate) before Step 3" >&2
+  fi
+done
+```
+
+Expected: `content matches — safe to lock` for both stores. **If either reports a mismatch, stop** — do not write a lock file for that store in Step 3; resolve the file/deployed divergence first and note it in the commit message instead.
+
+- [ ] **Step 3: Write the lock files**
+
+Only for stores Step 2 confirmed match:
 
 ```bash
 jq -n '{store_name:"LiturgicalCalendar", store_id:"01KRSCF4GVX0X4ZNXXJQEC4XXJ", model_id:"01KW4FW2ZCT1E693PY8D9TJEFM"}' \
@@ -454,7 +500,7 @@ jq -n '{store_name:"Martyrology", store_id:"01KZ1M9NJR1JHTMTV091X5DMYZ", model_i
   > auth/models/Martyrology.lock.json
 ```
 
-- [ ] **Step 3: Verify shape**
+- [ ] **Step 4: Verify shape**
 
 ```bash
 for f in auth/models/*.lock.json; do echo "$f"; jq -S . "$f"; done
@@ -468,7 +514,7 @@ jq -r 'keys | join(",")' auth/models/*.lock.json
 
 Expected for each: `model_id,store_id,store_name`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add auth/models/LiturgicalCalendar.lock.json auth/models/Martyrology.lock.json
@@ -519,7 +565,7 @@ Each store also has `auth/models/<Store>.lock.json`, recording the model ID this
 
 - [ ] **Step 3: Fix the §5.4 LitCal row and the component inventory**
 
-In §5.4, change the LitCal store cell back to `` `LiturgicalCalendar` (`01KRSCF4GVX0X4ZNXXJQEC4XXJ`) `` with no ownership caveat. In the component inventory, restore the LitCal model row to:
+In §5.4, change the LitCal store cell back to `` `LiturgicalCalendar` (`01KRSCF4GVX0X4ZNXXJQEC4XXJ`)`` with no ownership caveat. In the component inventory, restore the LitCal model row to:
 
 ```markdown
 | Authz model (LitCal) | `auth/models/LiturgicalCalendar.json` + `.lock.json` | owned here; synced from `LiturgicalCalendarAPI/scripts/openfga-model.json` on 2026-08-04 when ownership was centralized |
@@ -708,7 +754,7 @@ git rm scripts/openfga-model.json
 
 In `docs/ops/test-scope-migration-runbook.md`, replace the step that compares/applies `scripts/openfga-model.json` (around lines 47 and 215-216) with: change the model in `cdcf-infra/auth/models/LiturgicalCalendar.json`, get it merged, have the operator run `./setup-openfga.sh --target production --create-litcal-store` on the VPS, then re-pin `OPENFGA_MODEL_ID` from the new model ID. Apply the same substitution in `docs/enhancements/AUTHENTICATION_ROADMAP.md` and `infrastructure/README.md`.
 
-- [ ] **Step 8: Verify the local stack end to end**
+- [ ] **Step 8: Verify the local stack end-to-end**
 
 ```bash
 docker compose down -v
@@ -770,15 +816,26 @@ ssh ubuntu@catholicdigitalcommons.org 'bash -s' <<'EOS'
 set -euo pipefail
 cd /opt/cdcf-auth/auth
 KEY=$(grep -m1 '^OPENFGA_PRESHARED_KEY=' .env.production | cut -d= -f2- | tr -d '"')
+MISMATCH=0
 for n in LiturgicalCalendar Martyrology; do
   s=$(jq -r .store_id "models/$n.lock.json"); m=$(jq -r .model_id "models/$n.lock.json")
   live=$(curl -sS "http://127.0.0.1:8081/stores/$s/authorization-models?page_size=1" -H "Authorization: Bearer $KEY" | jq -r '.authorization_models[0].id')
-  [[ "$m" == "$live" ]] && echo "$n: OK ($m)" || echo "$n: MISMATCH lock=$m live=$live"
+  if [[ "$m" == "$live" ]]; then
+    echo "$n: OK ($m)"
+  else
+    echo "$n: MISMATCH lock=$m live=$live"
+    MISMATCH=1
+  fi
 done
+exit "$MISMATCH"
 EOS
 ```
 
-Expected: `OK` for both. A mismatch means someone uploaded between Task 3 and now — investigate before running any store action.
+Expected: `OK` for both, and the command exits 0. A mismatch prints `MISMATCH` for that
+store **and** makes the script exit 1 — the explicit flag means a mismatch fails the
+check instead of being swallowed by an `&&`/`||` chain that always reports success.
+A mismatch means someone uploaded between Task 3 and now — investigate before running
+any store action.
 
 ---
 

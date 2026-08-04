@@ -395,7 +395,7 @@ shred -u /tmp/martyrology-token.json 2>/dev/null || rm -f /tmp/martyrology-token
 
 ---
 
-> ## Tasks 3-7: local verification now runs against the local stack
+> ## Tasks 3, 5-7: local verification now runs against the local stack
 >
 > **Added 2026-08-03, resolved 2026-08-04.** These tasks were written assuming a
 > localhost Zitadel client existed. It does — but in the *local* Zitadel, not the
@@ -772,10 +772,11 @@ npx vitest run lib/__tests__/auth-callbacks.test.ts
 ```
 
 Expected: PASS, 2 tests. If importing `@/auth` fails for want of environment
-variables, set the four `AUTH_*` values from the local stack's `.env` (see
-Task 3 Step 9) in the test run — do not weaken the test to avoid the import,
-since importing the real module is what makes it a guard rather than a
-restatement.
+variables, set the three `AUTH_ZITADEL_ISSUER`, `AUTH_ZITADEL_ID` and
+`AUTH_ZITADEL_SECRET` values — the ones `auth.ts`'s module-level `Zitadel({...})`
+call reads directly — from the local stack's `.env` (see Task 3 Step 9) in the
+test run — do not weaken the test to avoid the import, since importing the
+real module is what makes it a guard rather than a restatement.
 
 - [ ] **Step 7: Add the type augmentation**
 
@@ -836,7 +837,10 @@ from `cp .env.example .env`, and `./scripts/setup-stack.sh --update-env` has
 since added `AUTH_ZITADEL_ISSUER`, `AUTH_ZITADEL_ID`, `AUTH_ZITADEL_SECRET`,
 `AUTH_SECRET` and `AUTH_URL` to it — Next.js loads `.env` automatically, so no
 separate `.env.local` is needed. Stop the containerized frontend first so port
-3000 is free for the dev server (same origin, same registered callback):
+3000 is free for the dev server (same origin, same registered callback). Run
+this from the `martyrology-frontend` checkout root, where its
+`docker-compose.yml` defines the `martyrology-frontend` service — running it
+from `martyrology-api` instead fails with "no such service":
 
 ```bash
 docker compose stop martyrology-frontend
@@ -1634,6 +1638,6 @@ Verified end to end: signed in as a user holding \`can_read_texts\`, a 2004-edit
 
 **Deviation from the spec, deliberate:** §5 says the *proxy route* gets tests for all three branches including refresh. Refresh is tested at the `lib/zitadel-token.ts` layer instead (Task 3 Step 2), because refresh happens in the Auth.js `jwt` callback, not in the route — the route only ever sees an already-refreshed session. Both branches the route can actually observe are tested there, plus two the spec did not name: a throwing session lookup and query-string preservation.
 
-**Placeholder scan:** no TBD/TODO; every code step carries the actual code; `<AUTH_ZITADEL_ID from the Production block>`-style angle brackets appear only where a runtime secret must be pasted by the operator, and each is accompanied by where to get it.
+**Placeholder scan:** no TBD/TODO; every code step carries the actual code; `<AUTH_ZITADEL_ID from the Production block>`-style angle brackets appear only where a runtime value must be pasted by the operator — `AUTH_ZITADEL_SECRET` and `AUTH_SECRET` are secrets, `AUTH_ZITADEL_ID` is a client ID, not a secret — and each is accompanied by where to get it.
 
 **Type consistency:** `ZitadelToken` fields (`access_token`, `refresh_token`, `expires_at`, `error`) are used identically in `lib/zitadel-token.ts`, `auth.ts`, and the tests. `expires_at` is seconds everywhere, `nowMs` is milliseconds and only appears as an `isExpired` parameter. `access_token` is declared on the `JWT` interface in `types/next-auth.d.ts` and consumed in Task 4's route via `getToken` and in Task 4's test mock; it never appears on the `Session` interface. `buildUpstreamHeaders` has one signature across its definition, test, and call site.
