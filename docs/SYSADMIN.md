@@ -56,7 +56,7 @@ Discussion: <https://github.com/CatholicOS/cdcf-website/discussions/98>. Summary
 | Internal nginx proxy | `nginx:alpine` (config in `auth/nginx/zitadel.conf`) | same |
 | OpenFGA | `openfga/openfga:v1.15.1` | same |
 | OpenFGA migrate (one-shot) | `openfga/openfga:v1.15.1` | same |
-| Authz model (LitCal) | `auth/models/LiturgicalCalendar.json` | lifted verbatim from `LiturgicalCalendarAPI/scripts/openfga-model.json` |
+| Authz model (LitCal) | `auth/models/LiturgicalCalendar.json` | originally lifted verbatim from `LiturgicalCalendarAPI/scripts/openfga-model.json`, but **frozen at the 2026-05-16 version and two revisions behind the deployed model** — that repo now owns it, see the §4.8 warning |
 | Authz model (Martyrology) | `auth/models/Martyrology.json` + `auth/models/Martyrology.tuples.json` | this repo — the `.tuples.json` carries the structural `edition → governed_by → governance_body` wiring seeded at store creation |
 | Setup script — Zitadel | `auth/setup-zitadel.sh` | this repo |
 | Setup script — OpenFGA | `auth/setup-openfga.sh` | this repo |
@@ -240,9 +240,11 @@ After successful run, you can sign in to the admin console at `https://auth.cath
 ### 4.8 OpenFGA stores + models [📜 CLI script]
 
 ```bash
-./setup-openfga.sh --target production --create-litcal-store
+./setup-openfga.sh --target production --create-litcal-store       # ⚠ see warning below
 ./setup-openfga.sh --target production --create-martyrology-store
 ```
+
+⚠ **`--create-litcal-store` is not safe to re-run as of 2026-08-04.** The LitCal model is now evolved in `LiturgicalCalendarAPI/scripts/openfga-model.json` and uploaded to the shared store from there; `auth/models/LiturgicalCalendar.json` here has been frozen since 2026-05-16 and is two revisions behind. Because `upload_model_if_changed` uploads whenever the file differs from the store's latest, re-running it would push the stale May model on top as the new latest. See [`handoffs/liturgicalcalendar.md`](../auth/handoffs/liturgicalcalendar.md) → "The copy in this repo is stale". The command is safe again once the file is re-synced from the LitCal repo.
 
 Each action creates the store (idempotent) and uploads `auth/models/<StoreName>.json` as the authorization model (idempotent — re-uploads only if the file diverges from what's already in the store). Prints the store ID + model ID.
 
@@ -311,7 +313,7 @@ A snapshot, not a source of truth: the per-property handoffs in [`auth/handoffs/
 | Org | Zitadel Project | Project roles | OpenFGA store |
 |---|---|---|---|
 | `CDCF` | `CDCF Website` (`376050623310725125`) | `subscriber`, `contributor`, `author`, `editor`, `administrator` | none — by design, see [`handoffs/cdcf-website.md`](../auth/handoffs/cdcf-website.md) |
-| `LiturgicalCalendar` | `LiturgicalCalendarAPI` (`373246750732845059`) | `admin`, `developer`, `calendar_editor`, `test_editor` | `LiturgicalCalendar` (`01KRSCF4GVX0X4ZNXXJQEC4XXJ`) |
+| `LiturgicalCalendar` | `LiturgicalCalendarAPI` (`373246750732845059`) | `admin`, `developer`, `calendar_editor`, `test_editor` | `LiturgicalCalendar` (`01KRSCF4GVX0X4ZNXXJQEC4XXJ`) — model owned by the LitCal repo, see §4.8 warning |
 | `Martyrology` | `MartyrologyAPI` (`384518610174869507`) | `admin`, `martyrology_editor`, `developer` | `Martyrology` (`01KZ1M9NJR1JHTMTV091X5DMYZ`) |
 | `BibleGet` | none — pre-provisioned Org stub | — | none |
 | `OntoKit` | none — pre-provisioned Org stub | — | none |
