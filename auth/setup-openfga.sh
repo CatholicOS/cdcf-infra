@@ -50,7 +50,12 @@ ACTIONS=()
 
 usage() {
     cat >&2 <<EOF
-Usage: $0 --target {local,production} ACTION [ACTION ...]
+Usage: $0 --target {local,staging,production} ACTION [ACTION ...]
+
+Targets:
+  local       Separate local OpenFGA (own compose stack), via .env.local
+  staging     Production OpenFGA, via .env.staging
+  production  Production OpenFGA, via .env.production
 
 Actions:
   --create-store NAME       Create store NAME + upload auth/models/NAME.json
@@ -85,6 +90,7 @@ done
 
 case "$TARGET" in
     local)      ENV_FILE="${ENV_FILE:-.env.local}" ;;
+    staging)    ENV_FILE="${ENV_FILE:-.env.staging}" ;;
     production) ENV_FILE="${ENV_FILE:-.env.production}" ;;
     *) echo "Unknown target: $TARGET" >&2; usage ;;
 esac
