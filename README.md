@@ -1,11 +1,12 @@
 # cdcf-infra — Catholic Digital Commons Foundation umbrella infrastructure
 
-Shared production infrastructure for the four CDCF umbrella properties:
+Shared production infrastructure for the five CDCF umbrella properties:
 
 - **cdcf-website** — [`CatholicOS/cdcf-website`](https://github.com/CatholicOS/cdcf-website)
 - **LiturgicalCalendarAPI** — [`Liturgical-Calendar/LiturgicalCalendarAPI`](https://github.com/Liturgical-Calendar/LiturgicalCalendarAPI)
 - **BibleGet API** — [`BibleGet-I-O/endpoint`](https://github.com/BibleGet-I-O/endpoint)
 - **OntoKit API** — [`CatholicOS/ontokit-api`](https://github.com/CatholicOS/ontokit-api)
+- **Martyrology API** — [`CatholicOS/martyrology-api`](https://github.com/CatholicOS/martyrology-api)
 
 This repo contains **only infrastructure** — no application code. Each property's app lives in its own repo and consumes the shared services configured here.
 
@@ -25,9 +26,9 @@ The deployment runs on the existing cdcf-website Plesk VPS via the Plesk Docker 
 
 **Pinned architecture (see [`auth/README.md`](./auth/README.md) for full rationale):**
 
-- Single Zitadel instance, one Org per property (`CDCF`, `LiturgicalCalendar`, `BibleGet`, `OntoKit`).
+- Single Zitadel instance, one Org per property (`CDCF`, `LiturgicalCalendar`, `BibleGet`, `OntoKit`, `Martyrology`).
 - No `zitadel-login` v2 UI service — each property implements its own login UI by calling Zitadel APIs.
 - Shared OpenFGA, with its own database on the host's native PostgreSQL.
 - **No containerized databases.** Both Zitadel and OpenFGA persist to the host Postgres (the same instance other VPS services already use). One Postgres to back up, patch, monitor.
 - Repo is cloned to `/opt/cdcf-auth/` on the VPS — see [`auth/README.md`](./auth/README.md#canonical-vps-layout) for the full path table.
-- Phase 1 wiring: LiturgicalCalendarAPI only (the only consumer already client-ready). Other Orgs are pre-provisioned stubs.
+- Phase 1 wiring: LiturgicalCalendarAPI, CDCF Website, and Martyrology (API + frontend OIDC client). BibleGet and OntoKit Orgs remain pre-provisioned stubs.

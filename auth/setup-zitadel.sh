@@ -17,7 +17,7 @@
 # yet vary their registered origins by target.
 #
 # Actions:
-#   --create-orgs              Create the four umbrella Orgs idempotently.
+#   --create-orgs              Create the five umbrella Orgs idempotently.
 #   --create-org NAME          Create a single Org by name (idempotent).
 #   --provision-litcal         Under LiturgicalCalendar Org, create the
 #                              LiturgicalCalendarAPI Project + roles +

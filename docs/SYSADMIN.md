@@ -1,6 +1,6 @@
 # Catholic OS Umbrella — System Admin Handbook
 
-End-to-end runbook for the shared Zitadel + OpenFGA infrastructure that serves the Catholic OS umbrella properties (cdcf-website, LiturgicalCalendar, BibleGet, OntoKit). Audience: anyone who needs to stand up, operate, debug, or hand off the umbrella auth stack.
+End-to-end runbook for the shared Zitadel + OpenFGA infrastructure that serves the Catholic OS umbrella properties (cdcf-website, LiturgicalCalendar, BibleGet, OntoKit, Martyrology). Audience: anyone who needs to stand up, operate, debug, or hand off the umbrella auth stack.
 
 This handbook lives in [`CatholicOS/cdcf-infra`](https://github.com/CatholicOS/cdcf-infra) and is the authoritative process document. Source-of-truth for individual concerns (compose definitions, env templates, setup scripts) lives in this same repo — this document orchestrates across them and adds the "why" that the code itself doesn't.
 
@@ -10,7 +10,7 @@ This handbook lives in [`CatholicOS/cdcf-infra`](https://github.com/CatholicOS/c
 
 ### What it is
 
-A **single Zitadel instance** + **single OpenFGA instance** that all four Catholic OS umbrella properties consume as their identity provider and (where needed) relationship-based authorization layer.
+A **single Zitadel instance** + **single OpenFGA instance** that all five Catholic OS umbrella properties consume as their identity provider and (where needed) relationship-based authorization layer.
 
 | Service | Public URL | Purpose |
 |---|---|---|
@@ -57,6 +57,7 @@ Discussion: <https://github.com/CatholicOS/cdcf-website/discussions/98>. Summary
 | OpenFGA | `openfga/openfga:v1.15.1` | same |
 | OpenFGA migrate (one-shot) | `openfga/openfga:v1.15.1` | same |
 | Authz model (LitCal) | `auth/models/LiturgicalCalendar.json` | lifted verbatim from `LiturgicalCalendarAPI/scripts/openfga-model.json` |
+| Authz model (Martyrology) | `auth/models/Martyrology.json` + `auth/models/Martyrology.tuples.json` | this repo — the `.tuples.json` carries the structural `edition → governed_by → governance_body` wiring seeded at store creation |
 | Setup script — Zitadel | `auth/setup-zitadel.sh` | this repo |
 | Setup script — OpenFGA | `auth/setup-openfga.sh` | this repo |
 | Backup script | `auth/backup/pg-dump.sh` | this repo |
@@ -96,7 +97,7 @@ Before starting Phase 1, the system admin must have:
 
 ## 4. Phase 1 — First-time umbrella provisioning
 
-End state of this phase: `auth.catholicdigitalcommons.org` and `authz.catholicdigitalcommons.org` are live, the four umbrella Orgs exist in Zitadel, the IAM admin can sign in to the console, and SMTP is wired so Zitadel can send notifications.
+End state of this phase: `auth.catholicdigitalcommons.org` and `authz.catholicdigitalcommons.org` are live, the five umbrella Orgs exist in Zitadel, the IAM admin can sign in to the console, and SMTP is wired so Zitadel can send notifications.
 
 ### 4.1 DNS + Plesk subdomains [👤 Manual]
 
@@ -213,32 +214,47 @@ curl -s -o /dev/null -w "%{http_code}\n" https://auth.catholicdigitalcommons.org
 curl -s -o /dev/null -w "%{http_code}\n" https://authz.catholicdigitalcommons.org/healthz        # → 200
 ```
 
-### 4.7 Rename bootstrap admin + create the four Orgs [📜 CLI script]
+### 4.7 Rename bootstrap admin + create the Orgs [📜 CLI script]
 
 ```bash
 cd /opt/cdcf-auth/auth
 ./setup-zitadel.sh --target production --all
 ```
 
-`--all` runs three actions in order:
+`--all` runs seven actions in dependency order:
 
-1. **`--rename-bootstrap-admin`** — Zitadel created the IAM admin with the legacy `<username>@<orgdomain>` suffix because the `DEFAULTINSTANCE_DOMAINPOLICY` env vars don't apply retroactively to users created inside the same `03_default_instance` migration. The script renames the admin to `${ZITADEL_ADMIN_EMAIL}` via `PUT /management/v1/users/{id}/username`. Idempotent.
-2. **`--create-orgs`** — creates the four umbrella Orgs: CDCF, LiturgicalCalendar, BibleGet, OntoKit. Idempotent (skips ones that already exist).
-3. **`--provision-litcal`** — creates the LiturgicalCalendarAPI Project + 4 roles + API OIDC app under the LiturgicalCalendar Org. Idempotent. Prints handoff values at end.
+1. **`--rename-bootstrap-admin`** — Zitadel created the IAM admin with the legacy `<username>@<orgdomain>` suffix because the `DEFAULTINSTANCE_DOMAINPOLICY` env vars don't apply retroactively to users created inside the same `03_default_instance` migration. The script renames the admin to `${ZITADEL_ADMIN_EMAIL}` via `PATCH /v2/users/{id}` with `{"username":"...","human":{}}` — the empty `human` type discriminator is mandatory, see §10.2. Idempotent (a no-op once no user with the legacy suffix remains).
+2. **`--create-orgs`** — creates the five umbrella Orgs: CDCF, LiturgicalCalendar, BibleGet, OntoKit, Martyrology. Idempotent (skips ones that already exist).
+3. **`--provision-litcal`** — creates the LiturgicalCalendarAPI Project + 4 roles + API OIDC app (PRIVATE_KEY_JWT) under the LiturgicalCalendar Org. Idempotent. Prints handoff values at end.
+4. **`--provision-litcal-frontend`** — the LitCal Frontend Web/PKCE app under that same Project. Detailed in §5.1.
+5. **`--provision-cdcf-website`** — under the CDCF Org, the "CDCF Website" Project + roles (`team_member`, `editor`, `admin`) + a confidential Web app (`client_secret_post`) for the Next.js frontend, with prod + staging + localhost dev callbacks.
+6. **`--provision-martyrology`** — under the Martyrology Org, the MartyrologyAPI Project + roles (`admin`, `martyrology_editor`, `developer`) + an API app using `client_secret_basic` (the API validates bearer tokens through Zitadel's `/oauth/v2/introspect`, which is HTTP-Basic authenticated). The roles are a coarse population gate on curation writes; OpenFGA remains the authority on every per-resource decision.
+7. **`--provision-martyrology-frontend`** — the Martyrology Frontend Web app (`client_secret_post`) in that same Project. Its origin follows `--target`: `localhost:3000` + devMode on `local`, `romanmartyrology.com` on `production`. **Skipped on `staging`** — Martyrology has no staging deployment yet.
+
+⚠ Actions 5, 6 and 7 create **confidential** apps, and their `client_secret` is printed exactly **once**, in the output of the run that creates them. Zitadel's `ListApplications` never returns secrets, so a re-run cannot recover one — the only remedy is regenerating the secret in the console. Capture them into the consuming property's env file during the run itself; see [`auth/handoffs/martyrology.md`](../auth/handoffs/martyrology.md) and [`auth/handoffs/cdcf-website.md`](../auth/handoffs/cdcf-website.md).
+
+Individual actions can also be run on their own — that's the normal path once the umbrella is up and only one property needs (re)provisioning. Run `./setup-zitadel.sh --help` for the full action list.
 
 After successful run, you can sign in to the admin console at `https://auth.catholicdigitalcommons.org/ui/console/` using `ZITADEL_ADMIN_EMAIL` and `ZITADEL_ADMIN_PASSWORD`. First login forces a password change.
 
-### 4.8 OpenFGA store + model for LiturgicalCalendar [📜 CLI script]
+### 4.8 OpenFGA stores + models [📜 CLI script]
 
 ```bash
 ./setup-openfga.sh --target production --create-litcal-store
+./setup-openfga.sh --target production --create-martyrology-store
 ```
 
-Creates the `LiturgicalCalendar` OpenFGA store (idempotent) and uploads `auth/models/LiturgicalCalendar.json` as the authorization model (idempotent — re-uploads only if the file diverges from what's already in the store). Prints the store ID + model ID.
+Each action creates the store (idempotent) and uploads `auth/models/<StoreName>.json` as the authorization model (idempotent — re-uploads only if the file diverges from what's already in the store). Prints the store ID + model ID.
 
-### 4.9 Write the LitCal handoff doc [👤 Manual]
+Where an `auth/models/<StoreName>.tuples.json` file exists it is also seeded — currently only Martyrology has one, carrying the structural `edition → governed_by → governance_body` tuples the model is useless without. Only tuples missing from the store are written; tuples present in the store but absent from the file are reported as drift and left alone (the script never deletes). Human role grants (`user:<sub>` → reader/editor/admin) are **not** seeded — they are per-person operator actions, see [`auth/handoffs/martyrology.md`](../auth/handoffs/martyrology.md).
 
-Capture the IDs printed by §4.7 and §4.8 into [`auth/handoffs/liturgicalcalendar.md`](../auth/handoffs/liturgicalcalendar.md). The template + secret-handling conventions are in [`auth/handoffs/README.md`](../auth/handoffs/README.md). PR + merge the populated handoff into `main`.
+`--create-store NAME` handles any other store by model-file basename; `--seed-tuples NAME` re-seeds tuples after editing a tuples file, without touching the model.
+
+### 4.9 Write the handoff docs [👤 Manual]
+
+Capture the IDs printed by §4.7 and §4.8 into the per-property handoff docs — [`auth/handoffs/liturgicalcalendar.md`](../auth/handoffs/liturgicalcalendar.md), [`auth/handoffs/cdcf-website.md`](../auth/handoffs/cdcf-website.md), [`auth/handoffs/martyrology.md`](../auth/handoffs/martyrology.md). The template + secret-handling conventions are in [`auth/handoffs/README.md`](../auth/handoffs/README.md). PR + merge the populated handoffs into `main`.
+
+Note that a handoff may deliberately keep its `<populated on first run>` placeholders rather than carry the real IDs in-repo (cdcf-website does) — in that case the canonical filled-in values live in the provisioning log on the VPS, not here. Either way, **no secrets in these files.**
 
 ---
 
@@ -565,7 +581,7 @@ All require automation PAT in `Authorization: Bearer ...` + `Host: auth.catholic
 | Update Project | `POST /zitadel.project.v2.ProjectService/UpdateProject` — body uses `projectId`, NOT `id` |
 | Add Role | `POST /zitadel.project.v2.ProjectService/AddProjectRole` |
 | Create App (API or OIDC) | `POST /zitadel.application.v2.ApplicationService/CreateApplication` |
-| Rename user | `PATCH /v2/users/{id}` with `{"username":"...","human":{}}` for human users or `{"username":"...","machine":{}}` for machine users. The empty type-discriminator wrapper is required even when only `username` changes. v1 fallback (if v2 unavailable for some reason): `PUT /management/v1/users/{id}/username` with `{"userName":"..."}`. |
+| Rename user | `PATCH /v2/users/{id}` with `{"username":"...","human":{}}` for human users or `{"username":"...","machine":{}}` for machine users. The empty type-discriminator wrapper is required even when only `username` changes. This is what `setup-zitadel.sh --rename-bootstrap-admin` calls (§4.7, §9.6) — it has no fallback path. The legacy `PUT /management/v1/users/{id}/username` with `{"userName":"..."}` still works if you need it for a manual one-off. |
 | Update user profile (display name, etc.) | `PATCH /v2/users/{id}` with `{"human":{"profile":{...}}}` |
 | Add SMTP provider | `POST /admin/v1/email/smtp` |
 | Activate SMTP provider | `POST /admin/v1/smtp/{id}/_activate` |
