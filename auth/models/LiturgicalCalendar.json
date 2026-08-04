@@ -7,17 +7,44 @@
     {
       "type": "wider_region",
       "relations": {
-        "admin": { "this": {} },
-        "viewer": { "this": {} },
-        "editor": { "this": {} },
-        "deleter": { "this": {} }
+        "member_nation": { "this": {} },
+        "admin": {
+          "union": {
+            "child": [
+              { "this": {} },
+              {
+                "tupleToUserset": {
+                  "tupleset":        { "relation": "member_nation" },
+                  "computedUserset": { "relation": "admin" }
+                }
+              }
+            ]
+          }
+        },
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        }
       },
       "metadata": {
         "relations": {
-          "admin":   { "directly_related_user_types": [{ "type": "user" }] },
-          "viewer":  { "directly_related_user_types": [{ "type": "user" }] },
-          "editor":  { "directly_related_user_types": [{ "type": "user" }] },
-          "deleter": { "directly_related_user_types": [{ "type": "user" }] }
+          "member_nation": { "directly_related_user_types": [{ "type": "national_calendar" }] },
+          "admin":         { "directly_related_user_types": [{ "type": "user" }] },
+          "editor":        { "directly_related_user_types": [{ "type": "user" }] },
+          "viewer":        { "directly_related_user_types": [{ "type": "user" }] }
         }
       }
     },
@@ -25,16 +52,29 @@
       "type": "national_calendar",
       "relations": {
         "admin": { "this": {} },
-        "viewer": { "this": {} },
-        "editor": { "this": {} },
-        "deleter": { "this": {} }
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        }
       },
       "metadata": {
         "relations": {
-          "admin":   { "directly_related_user_types": [{ "type": "user" }] },
-          "viewer":  { "directly_related_user_types": [{ "type": "user" }] },
-          "editor":  { "directly_related_user_types": [{ "type": "user" }] },
-          "deleter": { "directly_related_user_types": [{ "type": "user" }] }
+          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
+          "editor": { "directly_related_user_types": [{ "type": "user" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
         }
       }
     },
@@ -42,33 +82,149 @@
       "type": "diocesan_calendar",
       "relations": {
         "admin": { "this": {} },
-        "viewer": { "this": {} },
-        "editor": { "this": {} },
-        "deleter": { "this": {} }
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        }
       },
       "metadata": {
         "relations": {
-          "admin":   { "directly_related_user_types": [{ "type": "user" }] },
-          "viewer":  { "directly_related_user_types": [{ "type": "user" }] },
-          "editor":  { "directly_related_user_types": [{ "type": "user" }] },
-          "deleter": { "directly_related_user_types": [{ "type": "user" }] }
+          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
+          "editor": { "directly_related_user_types": [{ "type": "user" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
         }
       }
     },
     {
-      "type": "test_definition",
+      "type": "general_roman_calendar",
       "relations": {
         "admin": { "this": {} },
-        "viewer": { "this": {} },
-        "editor": { "this": {} },
-        "deleter": { "this": {} }
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        }
       },
       "metadata": {
         "relations": {
-          "admin":   { "directly_related_user_types": [{ "type": "user" }] },
-          "viewer":  { "directly_related_user_types": [{ "type": "user" }] },
-          "editor":  { "directly_related_user_types": [{ "type": "user" }] },
-          "deleter": { "directly_related_user_types": [{ "type": "user" }] }
+          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
+          "editor": { "directly_related_user_types": [{ "type": "user" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "national_calendar_test",
+      "relations": {
+        "admin": { "this": {} },
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
+          "editor": { "directly_related_user_types": [{ "type": "user" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "diocesan_calendar_test",
+      "relations": {
+        "admin": { "this": {} },
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
+          "editor": { "directly_related_user_types": [{ "type": "user" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "general_roman_calendar_test",
+      "relations": {
+        "admin": { "this": {} },
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
+          "editor": { "directly_related_user_types": [{ "type": "user" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
         }
       }
     }
