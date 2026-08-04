@@ -56,7 +56,7 @@ Expected: the file listed. **If it is missing**, stop and revise every affected 
 - [ ] **Step 3: (c) Preshared auth still honoured**
 
 ```bash
-docker run --rm -d --name fga-1182 -p 18081:8080 \
+docker run --rm -d --name fga-1182 -p 127.0.0.1:18081:8080 \
   -e OPENFGA_AUTHN_METHOD=preshared \
   -e OPENFGA_AUTHN_PRESHARED_KEYS=test-key \
   openfga/openfga:v1.18.2 run
@@ -72,13 +72,23 @@ Expected: `401` without the token, `200` with it.
 `martyrology-api/docker-compose.yml:141-145` documents that v1.15.1 panics at startup when the Playground is enabled alongside preshared auth. Re-test at 1.18.2:
 
 ```bash
-docker rm -f fga-1182 2>/dev/null
-docker run --rm --name fga-pg -p 18082:8080 \
+docker rm -f fga-1182 fga-pg 2>/dev/null
+docker run -d --name fga-pg -p 127.0.0.1:18082:8080 \
   -e OPENFGA_AUTHN_METHOD=preshared \
   -e OPENFGA_AUTHN_PRESHARED_KEYS=test-key \
   -e OPENFGA_PLAYGROUND_ENABLED=true \
-  openfga/openfga:v1.18.2 run 2>&1 | head -20
+  openfga/openfga:v1.18.2 run
+sleep 5
+docker logs fga-pg 2>&1 | head -20
+docker rm -f fga-pg 2>/dev/null
 ```
+
+Detached, without `--rm`, so this terminates either way and the crash output
+survives long enough to inspect: if the server panics on startup (the
+expected 1.15.1 behaviour) the container sits exited, and `docker logs` still
+reads its output; if it starts successfully instead (behaviour changed), the
+`sleep 5` bounds how long it runs before `docker logs` reads it. The trailing
+`docker rm -f` removes the container either way.
 
 Expected (if unchanged): a startup error mentioning that the playground only supports authn method 'none'. Record which it is — Task 3 updates martyrology's comment only if the behaviour changed.
 
@@ -161,10 +171,18 @@ Expected: store created, model uploaded, 11 structural tuples written.
 - [ ] **Step 5: Run the API's own test suite**
 
 ```bash
-docker compose exec api pytest -q 2>/dev/null || pytest -q
+if [ -n "$(docker compose ps -q api)" ]; then
+  docker compose exec api pytest -q
+else
+  echo "api container not running; falling back to host pytest" >&2
+  pytest -q
+fi
 ```
 
-Expected: pass. If the suite needs the stack's env, follow this repo's README for the canonical invocation rather than inventing one.
+Expected: pass. The fallback triggers only when the `api` container isn't
+available — a real test failure inside the container must propagate, not be
+masked by a host-side rerun. If the suite needs the stack's env, follow this
+repo's README for the canonical invocation rather than inventing one.
 
 - [ ] **Step 6: Commit and PR**
 
@@ -209,12 +227,17 @@ This stack is coming from v1.8.12, so it genuinely applies `006_add_collate_inde
 ```bash
 docker compose down -v
 docker compose up -d db openfga-migrate
+# -a: a fast one-shot may already have exited before this line runs, and
+# `docker compose ps -q` without -a only lists running containers — it would
+# return empty here and `docker wait ""` would fail.
+MIGRATE_EXIT=$(docker wait "$(docker compose ps -a -q openfga-migrate)")
 docker compose logs openfga-migrate | tail -20
+[ "$MIGRATE_EXIT" = "0" ] || { echo "openfga-migrate exited $MIGRATE_EXIT" >&2; exit 1; }
 ```
 
-Expected: migration runs, exits 0.
+Expected: migration runs, exits 0 — asserted above, not just eyeballed in the logs. Do not proceed to Step 3 unless the assertion passed.
 
-- [ ] **Step 3: Bring the rest up**
+- [ ] **Step 3: Bring the rest up, now that migration is confirmed clean**
 
 ```bash
 docker compose up -d
@@ -347,17 +370,33 @@ ssh ubuntu@catholicdigitalcommons.org
 cd /opt/cdcf-auth/auth
 docker compose -f docker-compose.prod.yml pull openfga openfga-migrate
 docker compose -f docker-compose.prod.yml up -d openfga-migrate
-docker compose -f docker-compose.prod.yml logs --tail=30 openfga-migrate
+# -a: a fast one-shot may already have exited before this line runs, and
+# `docker compose ps -q` without -a only lists running containers — it would
+# return empty here and `docker wait ""` would fail.
+MIGRATE_EXIT=$(docker wait "$(docker compose -f docker-compose.prod.yml ps -a -q openfga-migrate)")
+docker compose -f docker-compose.prod.yml logs --tail=30 openfga-migrate | tee /tmp/openfga-migrate.log
+[ "$MIGRATE_EXIT" = "0" ] || { echo "openfga-migrate exited $MIGRATE_EXIT" >&2; exit 1; }
+# Exit 0 only proves `migrate` ran without error, not that it left the store
+# untouched — for an upgrade against a live store that's the weaker claim.
+# `migrate` logs the pre-migration schema version as `"current version": N`
+# before it applies anything (verified against the v1.15.1 image: a fresh run
+# logs `"current version": 0`, a repeat run against an already-migrated
+# database logs `"current version": 6` — both then print the same
+# "running all migrations" / "migration done" lines, so those two lines are
+# NOT a usable no-op signal on their own). The Postgres migration set is fixed
+# at 001-006 (see Global Constraints), so a pre-migration version of 6 proves
+# there was nothing left to apply.
+grep -q '"current version": 6' /tmp/openfga-migrate.log || { echo "openfga-migrate started from a schema version other than 6 — it may have applied changes; investigate before continuing" >&2; exit 1; }
 ```
 
-Expected: migrate exits 0 having applied nothing.
+Expected: migrate exits 0 having applied nothing — asserted above before continuing.
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d openfga
 docker compose -f docker-compose.prod.yml ps
 ```
 
-Expected: `cdcf-auth-openfga-1` running `openfga/openfga:v1.18.2` and healthy. Zitadel containers are untouched.
+Expected: `cdcf-auth-openfga-1` running `openfga/openfga:v1.18.2` and healthy. Only run this once the assertion above passed. Zitadel containers are untouched.
 
 - [ ] **Step 3: Health probes**
 
@@ -380,9 +419,20 @@ done
 curl -sS -X POST "http://127.0.0.1:8081/stores/01KZ1M9NJR1JHTMTV091X5DMYZ/check" \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"authorization_model_id":"01KZ3VZC7RAAX7TEMMVAYEBPW8","tuple_key":{"user":"user:384646678734438403","relation":"can_read_texts","object":"edition:martyrologium_romanum_2004"}}' | jq .
+curl -sS -X POST "http://127.0.0.1:8081/stores/01KRSCF4GVX0X4ZNXXJQEC4XXJ/check" \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"authorization_model_id":"<LiturgicalCalendar model ID from the loop above>","tuple_key":{"user":"<known admin/editor user:ID>","relation":"viewer","object":"general_roman_calendar:general_roman_calendar"}}' | jq .
 ```
 
-Expected: both model IDs identical to Step 1, and the Check returns `{"allowed": true}` — the superuser inheritance path, which exercises model evaluation end to end rather than just liveness.
+Expected: both model IDs identical to Step 1, and both Checks return
+`{"allowed": true}` — the Martyrology probe exercises the superuser
+inheritance path, the LiturgicalCalendar probe a known `viewer` grant on
+`general_roman_calendar`, so together they exercise model evaluation end to
+end in both stores rather than just liveness. Fill in the LiturgicalCalendar
+`user` from a known grant (e.g. via the Zitadel console → `LiturgicalCalendar`
+Org → Users, cross-referenced with `auth/handoffs/liturgicalcalendar.md`'s
+role list) before running this probe for the first time, then reuse the same
+tuple on future upgrades.
 
 - [ ] **Step 5: Rollback procedure (only if a probe fails)**
 

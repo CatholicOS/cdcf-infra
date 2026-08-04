@@ -4,7 +4,7 @@
 
 **Goal:** Let a human sign in to the Martyrology API as themselves, so a licensed reader receives unredacted restricted texts instead of the anonymous redaction fallback.
 
-**Architecture:** Two confidential OIDC Web apps are provisioned in the existing `MartyrologyAPI` Zitadel project by `cdcf-infra/auth/setup-zitadel.sh`. `martyrology-frontend` gains Auth.js v5, which keeps the access token in an encrypted httpOnly cookie; its existing server-side proxy at `app/api/mr/[...path]/route.ts` attaches that token as a bearer header on the upstream call. The browser never holds a token and `martyrology-api` is not modified.
+**Architecture:** A confidential OIDC Web app is provisioned in the existing `MartyrologyAPI` Zitadel project by `cdcf-infra/auth/setup-zitadel.sh`, one per instance (production; local separately). `martyrology-frontend` gains Auth.js v5, which keeps the access token in an encrypted httpOnly cookie; its existing server-side proxy at `app/api/mr/[...path]/route.ts` attaches that token as a bearer header on the upstream call. The browser never holds a token and `martyrology-api` is not modified.
 
 **Tech Stack:** Bash + Zitadel Management API v2 (`cdcf-infra`); Next.js 16 App Router, React 19, TypeScript, Auth.js v5 (`next-auth@5.0.0-beta.31`), Vitest + Testing Library (`martyrology-frontend`).
 
@@ -395,32 +395,38 @@ shred -u /tmp/martyrology-token.json 2>/dev/null || rm -f /tmp/martyrology-token
 
 ---
 
-> ## Tasks 3-7 are stale pending the local-stack design
+> ## Tasks 3, 5-7: local verification now runs against the local stack
 >
-> **Added 2026-08-03.** These tasks were written assuming a localhost Zitadel
-> client existed, so several of their verification steps cannot be performed as
-> written. Do not execute them until they have been revised.
+> **Added 2026-08-03, resolved 2026-08-04.** These tasks were written assuming a
+> localhost Zitadel client existed. It does — but in the *local* Zitadel, not the
+> production one, which is the spec's D3 rather than a departure from it.
 >
-> Specifically affected:
+> Two things landed since:
 >
-> - **Task 3 Step 9** — the `.env.local` block uses the Dev app's credentials and
->   runs a live sign-in against `localhost:3000`. No such client exists.
-> - **Task 5 Step 8** — the browser acceptance sequence runs against
->   `localhost:3000` while signed in.
-> - **Task 6 Step 2** — instructs generating an `AUTH_SECRET` distinct from "the
->   dev value".
-> - **Task 7 Step 1** — the handoff table lists both apps.
-> - **Task 7 Step 3** — the README section documents local sign-in with the Dev
->   client.
-> - **Task 7 Step 5** — the issue-close comment claims two apps exist and that
->   "both apps live in the MartyrologyAPI project". Do not post it as written.
+> - **`--provision-martyrology-frontend` is target-aware** (PR #23). `--target local`
+>   registers `http://localhost:3000/api/auth/callback/zitadel` with `devMode=true`
+>   against a local Zitadel; `--target production` is byte-identical to before.
+> - **The local stack exists**, built on unmerged `feat/local-dev-stack` branches
+>   in `martyrology-api` and `martyrology-frontend` — see `martyrology-api`'s
+>   `docs/superpowers/specs/2026-08-04-local-development-stack-design.md`, and the
+>   bring-up in `martyrology-frontend`'s README. It is not yet on either repo's
+>   `main`.
 >
-> The code and unit tests in Tasks 3, 4 and 5 are unaffected — they mock the
-> session and never contact Zitadel. Only the live verification steps are.
+> So the affected steps are performed as written, against
+> `http://localhost:3000` with the local stack running, taking
+> `AUTH_ZITADEL_ID` / `AUTH_ZITADEL_SECRET` from the `.env` that
+> `./scripts/setup-stack.sh --update-env` writes:
 >
-> Two ways forward, to be settled when the local-stack design lands: verify
-> against the local stack once it exists, or verify against production after
-> deploying and drop local sign-in from the plan entirely.
+> - **Task 3 Step 9**, **Task 5 Step 8** — run against the local stack.
+> - **Task 6 Step 2** — "the dev value" means the local stack's `AUTH_SECRET`,
+>   which `setup-stack.sh` generates. Production's must differ.
+> - **Task 7 Steps 1, 3, 5** — there is **one app per instance**, not two apps in
+>   one instance. The handoff table lists the production app; local sign-in is
+>   documented as a property of the local stack. Do not claim "both apps live in
+>   the MartyrologyAPI project" of a single Zitadel.
+>
+> The code and unit tests in Tasks 3, 4 and 5 were never affected — they mock the
+> session and never contact Zitadel.
 
 ### Task 3: Auth.js configuration and token refresh
 
@@ -766,9 +772,11 @@ npx vitest run lib/__tests__/auth-callbacks.test.ts
 ```
 
 Expected: PASS, 2 tests. If importing `@/auth` fails for want of environment
-variables, set the four `AUTH_*` values from `.env.local` in the test run — do
-not weaken the test to avoid the import, since importing the real module is what
-makes it a guard rather than a restatement.
+variables, set the three `AUTH_ZITADEL_ISSUER`, `AUTH_ZITADEL_ID` and
+`AUTH_ZITADEL_SECRET` values — the ones `auth.ts`'s module-level `Zitadel({...})`
+call reads directly — from the local stack's `.env` (see Task 3 Step 9) in the
+test run — do not weaken the test to avoid the import, since importing the
+real module is what makes it a guard rather than a restatement.
 
 - [ ] **Step 7: Add the type augmentation**
 
@@ -822,20 +830,20 @@ npm run lint
 
 Expected: both clean.
 
-Create `.env.local` (already gitignored) using the **Dev** app values from Task 2:
+Run this against the local stack (`martyrology-api`'s
+`docs/superpowers/specs/2026-08-04-local-development-stack-design.md`, brought
+up per this repo's own README). `API_BASE` is already in the stack's `.env`
+from `cp .env.example .env`, and `./scripts/setup-stack.sh --update-env` has
+since added `AUTH_ZITADEL_ISSUER`, `AUTH_ZITADEL_ID`, `AUTH_ZITADEL_SECRET`,
+`AUTH_SECRET` and `AUTH_URL` to it — Next.js loads `.env` automatically, so no
+separate `.env.local` is needed. Stop the containerized frontend first so port
+3000 is free for the dev server (same origin, same registered callback). Run
+this from the `martyrology-frontend` checkout root, where its
+`docker-compose.yml` defines the `martyrology-frontend` service — running it
+from `martyrology-api` instead fails with "no such service":
 
 ```bash
-AUTH_ZITADEL_ISSUER=https://auth.catholicdigitalcommons.org
-AUTH_ZITADEL_ID=<Dev client_id>
-AUTH_ZITADEL_SECRET=<Dev client_secret>
-AUTH_SECRET=<output of: npx auth secret --raw, or openssl rand -base64 32>
-AUTH_URL=http://localhost:3000
-API_BASE=https://api.romanmartyrology.com
-```
-
-Then:
-
-```bash
+docker compose stop martyrology-frontend
 npm run dev
 ```
 
@@ -1319,7 +1327,7 @@ npx tsc --noEmit
 npm run dev
 ```
 
-With `.env.local` from Task 3 Step 9 still in place:
+With the local stack running and its `.env` (from Task 3 Step 9) still in place:
 
 1. Open `http://localhost:3000` — the header shows **Sign in**.
 2. Open `http://localhost:3000/compare`, select `martyrologium_romanum_2004`, and confirm `EulogyView` shows the redaction fallback.
@@ -1507,18 +1515,22 @@ Append to `cdcf-infra/auth/handoffs/martyrology.md`:
 ## Human login — the frontend OIDC clients
 
 Provisioned by `./setup-zitadel.sh --target production --provision-martyrology-frontend`.
-Two confidential Web apps in the **existing `MartyrologyAPI` project** — not a
-project of their own, because same-project membership is what puts
+One confidential Web app in the **existing `MartyrologyAPI` project** — not a
+project of its own, because project membership is what puts
 `urn:zitadel:iam:org:project:384518610174869507:roles` in the token without
 requesting an `:aud` scope.
 
 | App | Origin | devMode | Auth method |
 |---|---|---|---|
 | `Martyrology Frontend` | `https://romanmartyrology.com` | false | `client_secret_post` |
-| `Martyrology Frontend (Dev)` | `http://localhost:3000` | true | `client_secret_post` |
 
-Callback path on both: `/api/auth/callback/zitadel` — fixed by the Auth.js
-provider id, so it cannot be changed on one side alone.
+Local development provisions the same app name into a **separate, local-only
+Zitadel instance** (`--target local`) — one app per instance, not a second app
+in this project. That client's ID and secret live in the local stack's own
+`.env`, not here; see `martyrology-frontend`'s README.
+
+Callback path: `/api/auth/callback/zitadel` — fixed by the Auth.js provider
+id, so it cannot be changed without changing the provider id too.
 
 ### Secrets are not in git and not in the deploy
 
@@ -1527,8 +1539,8 @@ romanmartyrology.com → Node.js → Custom environment variables. The deploy
 writes `.next/standalone/.env` with non-secret values only; a real environment
 variable takes precedence over that file.
 
-Both client secrets were emitted once at creation and are unrecoverable. To
-rotate: Martyrology Org → Projects → MartyrologyAPI → Apps → *app name* →
+The client secret was emitted once at creation and is unrecoverable. To
+rotate: Martyrology Org → Projects → MartyrologyAPI → Apps → `Martyrology Frontend` →
 Regenerate Client Secret, then update the Plesk environment variable.
 
 ### Verified end to end
@@ -1556,19 +1568,14 @@ Add to `martyrology-frontend/README.md`:
 ```markdown
 ## Signing in locally
 
-Local sign-in uses the `Martyrology Frontend (Dev)` Zitadel app, which is the
-only one that accepts an `http://localhost:3000` redirect. Create `.env.local`
-(gitignored):
-
-    AUTH_ZITADEL_ISSUER=https://auth.catholicdigitalcommons.org
-    AUTH_ZITADEL_ID=<Dev client_id>
-    AUTH_ZITADEL_SECRET=<Dev client_secret>
-    AUTH_SECRET=<openssl rand -base64 32>
-    AUTH_URL=http://localhost:3000
-    API_BASE=https://api.romanmartyrology.com
-
-Credentials come from `cdcf-infra/auth/handoffs/martyrology.md`. Never use the
-production client secret locally.
+Local sign-in runs against the local stack's own Zitadel instance (see "Local
+development stack" above for bring-up) — a `Martyrology Frontend` app
+provisioned there by `--target local`, separate from the production app in
+production's Zitadel, not a second app in production's project.
+`./scripts/setup-stack.sh --update-env` writes its `AUTH_ZITADEL_ISSUER`,
+`AUTH_ZITADEL_ID` and `AUTH_ZITADEL_SECRET` into this stack's `.env`, which
+Next.js loads automatically — no `.env.local` needed, and never reuse the
+production client secret here.
 
 Signing in is additive: anonymous browsing works unchanged, and restricted
 editions render redacted. Signing in as a user who holds the OpenFGA
@@ -1580,11 +1587,11 @@ editions render redacted. Signing in as a user who holds the OpenFGA
 ```bash
 cd /home/johnrdorazio/development/CatholicOS_org/cdcf-infra
 git add auth/handoffs/martyrology.md
-git commit -S -m "Record the Martyrology frontend OIDC clients in the handoff"
+git commit -S -m "Record the Martyrology frontend OIDC client in the handoff"
 
 cd /home/johnrdorazio/development/CatholicOS_org/martyrology-frontend
 git add README.md
-git commit -S -m "Document local sign-in against the dev Zitadel client"
+git commit -S -m "Document local sign-in against the local stack's Zitadel instance"
 ```
 
 - [ ] **Step 5: Close the issue**
@@ -1592,13 +1599,13 @@ git commit -S -m "Document local sign-in against the dev Zitadel client"
 ```bash
 gh issue close 26 --repo CatholicOS/martyrology-api --comment "Closed by the OIDC login client work.
 
-Two confidential Web apps (\`Martyrology Frontend\`, \`Martyrology Frontend (Dev)\`) now exist in the MartyrologyAPI project, and martyrology-frontend signs in against them with Auth.js v5. The access token stays server-side and rides the existing /api/mr proxy, so martyrology-api needed no changes — no CORS, no new endpoints.
+A confidential Web app (\`Martyrology Frontend\`) now exists in the production MartyrologyAPI project, and martyrology-frontend signs in against it with Auth.js v5. The access token stays server-side and rides the existing /api/mr proxy, so martyrology-api needed no changes — no CORS, no new endpoints. Local development provisions the same app name into a separate, local-only Zitadel instance — one app per instance, not a second app in this project.
 
 Answers to the open questions in this issue:
 
 1. **Who is the client?** martyrology-frontend, the existing Next.js curation app at romanmartyrology.com. It already ran a server-side proxy, so a confidential Web app fit the architecture that was there.
 2. **Does curation get a UI?** Yes, but reading only for now. Phase B authoring is still unbuilt and out of scope here.
-3. **Audience.** Moot — both apps live in the MartyrologyAPI project, so the roles claim appears with no \`:aud\` scope requested. Verified against a live token.
+3. **Audience.** Moot — the app lives in the MartyrologyAPI project, so the roles claim appears with no \`:aud\` scope requested. Verified against a live token.
 4. **Service accounts.** Unchanged; a machine user with a PAT still works and needs no new client.
 
 Verified end to end: signed in as a user holding \`can_read_texts\`, a 2004-edition elogium returns real text; signed out, the same request returns \`text: null\` with \`metadata.access = \"restricted-texts\"\`."
@@ -1631,6 +1638,6 @@ Verified end to end: signed in as a user holding \`can_read_texts\`, a 2004-edit
 
 **Deviation from the spec, deliberate:** §5 says the *proxy route* gets tests for all three branches including refresh. Refresh is tested at the `lib/zitadel-token.ts` layer instead (Task 3 Step 2), because refresh happens in the Auth.js `jwt` callback, not in the route — the route only ever sees an already-refreshed session. Both branches the route can actually observe are tested there, plus two the spec did not name: a throwing session lookup and query-string preservation.
 
-**Placeholder scan:** no TBD/TODO; every code step carries the actual code; `<Dev client_id>`-style angle brackets appear only where a runtime secret must be pasted by the operator, and each is accompanied by where to get it.
+**Placeholder scan:** no TBD/TODO; every code step carries the actual code; `<AUTH_ZITADEL_ID from the Production block>`-style angle brackets appear only where a runtime value must be pasted by the operator — `AUTH_ZITADEL_SECRET` and `AUTH_SECRET` are secrets, `AUTH_ZITADEL_ID` is a client ID, not a secret — and each is accompanied by where to get it.
 
 **Type consistency:** `ZitadelToken` fields (`access_token`, `refresh_token`, `expires_at`, `error`) are used identically in `lib/zitadel-token.ts`, `auth.ts`, and the tests. `expires_at` is seconds everywhere, `nowMs` is milliseconds and only appears as an `isExpired` parameter. `access_token` is declared on the `JWT` interface in `types/next-auth.d.ts` and consumed in Task 4's route via `getToken` and in Task 4's test mock; it never appears on the `Session` interface. `buildUpstreamHeaders` has one signature across its definition, test, and call site.
