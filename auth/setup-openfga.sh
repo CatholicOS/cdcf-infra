@@ -34,10 +34,10 @@
 # handoffs/martyrology.md. This script never deletes tuples: tuples in the store
 # that are absent from the file are reported as drift and left alone.
 #
-# Exit codes: 1 env/config, 3 store, 4 model file missing, 5 model upload,
-#   6 tuples file, 7 lock guard refused, 8 duplicate store names, 9 the OpenFGA
-#   API failed (transport error or non-2xx) — never a verdict about state,
-#   64 usage.
+# Exit codes: 1 env/config, 3 store, 4 model file missing, 5 model upload
+#   response carried no model ID, 6 tuples file, 7 lock guard refused, 8
+#   duplicate store names, 9 the OpenFGA API failed (transport error or
+#   non-2xx) — never a verdict about state, 64 usage.
 #
 # Usage:
 #   ./setup-openfga.sh --target production --create-litcal-store
@@ -178,12 +178,14 @@ fga() {
         response=$(curl -sS -X "$method" "${OPENFGA_INTERNAL_URL}${path}" \
             -H "Authorization: Bearer $OPENFGA_PRESHARED_KEY" \
             -H "Content-Type: application/json" \
+            --connect-timeout 10 --max-time 120 \
             -w $'\n%{http_code}' \
             -d "$body") || { err "OpenFGA request failed (transport): $method $path"; return 1; }
     else
         response=$(curl -sS -X "$method" "${OPENFGA_INTERNAL_URL}${path}" \
             -H "Authorization: Bearer $OPENFGA_PRESHARED_KEY" \
             -H "Content-Type: application/json" \
+            --connect-timeout 10 --max-time 120 \
             -w $'\n%{http_code}') || { err "OpenFGA request failed (transport): $method $path"; return 1; }
     fi
     # -w appends exactly one newline + the status, so the last line is the
@@ -527,7 +529,7 @@ upload_model_if_changed() {
     local result
     if ! result=$(fga POST "/stores/${store_id}/authorization-models" "$payload"); then
         err "Failed to upload model to store '$name' ($store_id)"
-        exit 5
+        exit "$EXIT_API"
     fi
     local model_id
     model_id=$(echo "$result" | jq -r '.authorization_model_id // empty')
