@@ -4,7 +4,7 @@
 
 **Goal:** Let a human sign in to the Martyrology API as themselves, so a licensed reader receives unredacted restricted texts instead of the anonymous redaction fallback.
 
-**Architecture:** Two confidential OIDC Web apps are provisioned in the existing `MartyrologyAPI` Zitadel project by `cdcf-infra/auth/setup-zitadel.sh`. `martyrology-frontend` gains Auth.js v5, which keeps the access token in an encrypted httpOnly cookie; its existing server-side proxy at `app/api/mr/[...path]/route.ts` attaches that token as a bearer header on the upstream call. The browser never holds a token and `martyrology-api` is not modified.
+**Architecture:** A confidential OIDC Web app is provisioned in the existing `MartyrologyAPI` Zitadel project by `cdcf-infra/auth/setup-zitadel.sh`, one per instance (production; local separately). `martyrology-frontend` gains Auth.js v5, which keeps the access token in an encrypted httpOnly cookie; its existing server-side proxy at `app/api/mr/[...path]/route.ts` attaches that token as a bearer header on the upstream call. The browser never holds a token and `martyrology-api` is not modified.
 
 **Tech Stack:** Bash + Zitadel Management API v2 (`cdcf-infra`); Next.js 16 App Router, React 19, TypeScript, Auth.js v5 (`next-auth@5.0.0-beta.31`), Vitest + Testing Library (`martyrology-frontend`).
 
