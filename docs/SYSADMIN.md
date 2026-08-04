@@ -227,7 +227,7 @@ cd /opt/cdcf-auth/auth
 2. **`--create-orgs`** — creates the five umbrella Orgs: CDCF, LiturgicalCalendar, BibleGet, OntoKit, Martyrology. Idempotent (skips ones that already exist).
 3. **`--provision-litcal`** — creates the LiturgicalCalendarAPI Project + 4 roles + API OIDC app (PRIVATE_KEY_JWT) under the LiturgicalCalendar Org. Idempotent. Prints handoff values at end.
 4. **`--provision-litcal-frontend`** — the LitCal Frontend Web/PKCE app under that same Project. Detailed in §5.1.
-5. **`--provision-cdcf-website`** — under the CDCF Org, the "CDCF Website" Project + roles (`team_member`, `editor`, `admin`) + a confidential Web app (`client_secret_post`) for the Next.js frontend, with prod + staging + localhost dev callbacks.
+5. **`--provision-cdcf-website`** — under the CDCF Org, the "CDCF Website" Project + the five WP-mirrored roles (`subscriber`, `contributor`, `author`, `editor`, `administrator` — `CDCF_ROLES` in the script; `team_member` was removed in Phase 5, the bio-edit ownership signal is the `author_team_member` ACF link, not a role) + **two** confidential Web apps (`client_secret_post`): `CDCF Website` for the production origin, and `CDCF Website (Non-Prod)` for staging + localhost dev with `devMode=true`. They are separate clients with separate secrets, so production credentials are never shared with staging.
 6. **`--provision-martyrology`** — under the Martyrology Org, the MartyrologyAPI Project + roles (`admin`, `martyrology_editor`, `developer`) + an API app using `client_secret_basic` (the API validates bearer tokens through Zitadel's `/oauth/v2/introspect`, which is HTTP-Basic authenticated). The roles are a coarse population gate on curation writes; OpenFGA remains the authority on every per-resource decision.
 7. **`--provision-martyrology-frontend`** — the Martyrology Frontend Web app (`client_secret_post`) in that same Project. Its origin follows `--target`: `localhost:3000` + devMode on `local`, `romanmartyrology.com` on `production`. **Skipped on `staging`** — Martyrology has no staging deployment yet.
 
@@ -303,6 +303,26 @@ FRONTEND_URL=https://litcal{,-staging}.johnromanodorazio.com
 ```
 
 The Frontend gets NO `OPENFGA_*` vars and NO `ZITADEL_MACHINE_TOKEN` — it doesn't talk to OpenFGA directly and only ever holds user tokens.
+
+### 5.4 Per-property state — verified against production 2026-08-04
+
+A snapshot, not a source of truth: the per-property handoffs in [`auth/handoffs/`](../auth/handoffs/) own the IDs, and this table exists so an operator can see at a glance what is actually provisioned before running anything. Every row was read back from the live Zitadel and OpenFGA APIs on the date above.
+
+| Org | Zitadel Project | Project roles | OpenFGA store |
+|---|---|---|---|
+| `CDCF` | `CDCF Website` (`376050623310725125`) | `subscriber`, `contributor`, `author`, `editor`, `administrator` | none — by design, see [`handoffs/cdcf-website.md`](../auth/handoffs/cdcf-website.md) |
+| `LiturgicalCalendar` | `LiturgicalCalendarAPI` (`373246750732845059`) | `admin`, `developer`, `calendar_editor`, `test_editor` | `LiturgicalCalendar` (`01KRSCF4GVX0X4ZNXXJQEC4XXJ`) |
+| `Martyrology` | `MartyrologyAPI` (`384518610174869507`) | `admin`, `martyrology_editor`, `developer` | `Martyrology` (`01KZ1M9NJR1JHTMTV091X5DMYZ`) |
+| `BibleGet` | none — pre-provisioned Org stub | — | none |
+| `OntoKit` | none — pre-provisioned Org stub | — | none |
+
+**Martyrology OpenFGA rollout (the Task-6 `platform` / `on_platform` model) is live.** Full detail and the verification queries live in [`handoffs/martyrology.md`](../auth/handoffs/martyrology.md) → "Rollout status"; in summary:
+
+- Latest authorization model is `01KZ3VZC7RAAX7TEMMVAYEBPW8` (types `user`, `platform`, `governance_body`, `edition`), superseding the pre-Task-6 `01KZ1M9NM7YRM5PB1KH2WF67XX`, which remains in the store's model history.
+- `MARTYROLOGY_OPENFGA_MODEL_ID` in `/etc/martyrology/api.env` is pinned to that model. **The pin is what makes it take effect** — the API checks against a fixed model, never "latest", so an upload alone changes nothing.
+- All 11 structural tuples are seeded (8 `governed_by` + 3 `on_platform`), and the one-time `superuser` bootstrap tuple on `platform:martyrology` exists. No direct `reader`/`editor`/`admin` tuple exists on any governance body — platform superuser inheritance is currently the only grant path in the store.
+
+⚠ When reading tuples back, a `tuple_key` filtered by `relation` alone is rejected by OpenFGA (`validation_error: … the object type field is required`), and piping that error through `jq '.tuples | length'` prints a misleading `0`. Pin a `user` alongside the object type — worked examples are in the Martyrology handoff's "Verify" section.
 
 ---
 

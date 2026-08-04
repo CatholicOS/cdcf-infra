@@ -44,7 +44,7 @@ On the **first** sign-in for an email-verified Zitadel user, the cdcf-website be
 
 ### Re-running `--provision-cdcf-website` against an already-provisioned project
 
-`create_roles` only adds; it doesn't delete or rename existing roles. If you re-run against the CDCF Website project after a role-catalog change (e.g. Phase 5 of role-mirroring), any role keys that disappeared from `CDCF_ROLES` will remain in Zitadel as orphans. Clean them up manually in the Zitadel admin console: `CDCF` Org → Projects → `CDCF Website` → Roles → trash the unwanted entries. Roles with active `userGrants` block deletion until the grants are removed first.
+`create_roles` only adds; it doesn't delete or rename existing roles. If you re-run against the CDCF Website project after a role-catalog change (e.g. Phase 5 of role-mirroring), any role keys that disappeared from `CDCF_ROLES` will remain in Zitadel as orphans. Clean them up manually in the Zitadel admin console: `CDCF` Org → Projects → `CDCF Website` → Roles → trash the unwanted entries. Roles with active `userGrants` block deletion until the grants are removed first. Verified 2026-08-04: the live project carries exactly the five `CDCF_ROLES` keys, so the Phase 5 removal of `team_member` left no orphan behind.
 
 ## Out-of-band (delivered separately, not in this repo)
 
@@ -89,7 +89,9 @@ The Python CLI (`scripts/cdcf_api.py`) continues to use Application Password aut
 
 ## What's NOT provisioned here (Phase 2 follow-ups for issue #2)
 
-- **User role grants** (which Zitadel users get `team_member`/`editor`/`admin`). Each cdcf-website team member signs in once via the Next.js frontend, then is granted `team_member` by an IAM_OWNER via the Zitadel console. Until granted, the user authenticates successfully but the `roles` claim is empty — `requireRole('team_member')` in the cdcf-website middleware will reject them.
+- **User role grants** — which Zitadel users get an elevated role. The vocabulary is the five WP-mirrored roles in `CDCF_ROLES` (`subscriber`, `contributor`, `author`, `editor`, `administrator`), verified live on project `376050623310725125` on 2026-08-04. `subscriber` is the implicit default: every email-verified sign-up is treated as one by the bearer validator even before an explicit `userGrant` exists, so only elevation (`contributor` → `administrator`) needs a grant by an IAM_OWNER via the Zitadel console.
+
+  **There is no `team_member` role**, and bio access is not role-gated. `team_member`-as-role was removed in Phase 5 — the bio-edit ownership signal is the `author_team_member` ACF link, not a role, so a linked Subscriber can edit their own bio (see the note beside `CDCF_ROLES` in `setup-zitadel.sh`). This bullet previously said users are granted `team_member` and that `requireRole('team_member')` in the cdcf-website middleware rejects them otherwise; both are stale. Checked against the cdcf-website repo on 2026-08-04: `requireRole` (`lib/auth-utils.ts`) is a generic `(role: string)` helper with **no callers in application code** — `'team_member'` appears only as an arbitrary role fixture in `lib/auth-utils.test.ts`. `app/[lang]/my-bio/page.tsx` redirects anonymous users to sign-in and then branches on whether `fetchMyTeamMember()` finds a link, with no role check. Every other `team_member` in that repo is the WordPress post type / ACF link.
 - **WordPress user ↔ Zitadel email mapping**: outside this handoff. The WP `author_team_member` ACF link (set via `POST /cdcf/v1/author-team-member` in the cdcf-website repo) is the bridge from email → WP user → team_member bio post.
 - **OpenFGA store**: not needed for issue #2. The bio-edit authorization invariant ("user must own the post via `author_team_member`") is enforced inline in the WP REST handler; no relationship-graph query needed. If future phases add cross-property sharing (e.g. an OntoKit author also editing a CDCF bio), an OpenFGA store can be added then.
 

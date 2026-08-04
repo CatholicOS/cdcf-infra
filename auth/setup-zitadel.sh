@@ -28,10 +28,13 @@
 #                              callbacks registered. Requires --provision-litcal
 #                              to have run (or be running together).
 #   --provision-cdcf-website   Under the CDCF Org, create the "CDCF Website"
-#                              Project + roles (team_member/editor/admin) + a
-#                              confidential OIDC Web app (client_secret_post)
-#                              for the Next.js frontend, with prod + staging +
-#                              localhost dev callbacks registered. Emits
+#                              Project + the WP-mirrored roles in CDCF_ROLES
+#                              (subscriber/contributor/author/editor/
+#                              administrator) + TWO confidential OIDC Web apps
+#                              (client_secret_post) for the Next.js frontend:
+#                              "CDCF Website" for the production origin and
+#                              "CDCF Website (Non-Prod)" for staging +
+#                              localhost dev (devMode=true). Emits each
 #                              client_secret ONCE on first run; re-runs against
 #                              an existing app cannot recover the secret.
 #   --provision-martyrology    Under the Martyrology Org, create the
