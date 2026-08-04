@@ -92,7 +92,10 @@ Actions:
   --provision-cdcf-website    Provision CDCF Website Project + roles + Web OIDC app (client_secret_post)
   --provision-martyrology     Provision Martyrology Project + roles + API app (client_secret_basic)
   --provision-martyrology-frontend
-                              Provision Martyrology Frontend OIDC app (Web/client_secret_post, production only)
+                              Provision Martyrology Frontend OIDC app (Web/client_secret_post).
+                              Origin follows --target: localhost+devMode on local,
+                              romanmartyrology.com on production. Skips on staging
+                              (no Martyrology staging deployment yet).
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
   --all                       Above seven in dependency order
 
@@ -770,13 +773,43 @@ MARTYROLOGY_API_APP_NAME="MartyrologyAPI Backend"
 # urn:zitadel:iam:org:project:<id>:roles into the token with no :aud scope
 # requested — which is why this is not a project of its own.
 #
-# Only the production URI is registered here, matching LITCAL_FRONTEND_URLS:
-# production Zitadel carries production redirect URIs only. Local development
-# runs against a separate local Zitadel instance (its own docker-compose
-# stack, mirroring LitCal's setup) rather than a localhost client registered
-# in this production instance — that local stack is a separate design.
+# One app per Zitadel INSTANCE, not two apps in one instance. The origin and
+# devMode are chosen by --target because each target is a different instance:
+#
+#   --target local       localhost origin, devMode=true  -> LOCAL Zitadel
+#                        (its own compose stack, mirroring LitCal's setup)
+#   --target production  production origin, devMode=false -> production Zitadel
+#
+# So no localhost client is ever registered in the production instance — that
+# is the spec's D3, and this is the mechanism that implements it rather than a
+# departure from it. Because local and production are separate instances, both
+# apps can share one name without colliding; create_oidc_web_app matches an
+# existing app by name WITHIN a project, so nothing is overwritten across
+# instances.
+#
+# Martyrology has no staging deployment yet (design doc: "Staging environment |
+# None"). --target staging therefore registers nothing and skips with a
+# warning. If a staging origin appears later it goes in the production Zitadel
+# under a DISTINCT app name — staging and production share an instance, so a
+# shared name there would overwrite the production app's redirect URIs.
 MARTYROLOGY_FRONTEND_APP_NAME="Martyrology Frontend"
-MARTYROLOGY_FRONTEND_URLS=("https://romanmartyrology.com")
+case "$TARGET" in
+    local)
+        MARTYROLOGY_FRONTEND_URLS=("http://localhost:3000")
+        MARTYROLOGY_FRONTEND_DEV_MODE="true"
+        MARTYROLOGY_FRONTEND_LABEL="Local"
+        ;;
+    production)
+        MARTYROLOGY_FRONTEND_URLS=("https://romanmartyrology.com")
+        MARTYROLOGY_FRONTEND_DEV_MODE="false"
+        MARTYROLOGY_FRONTEND_LABEL="Production"
+        ;;
+    *)
+        MARTYROLOGY_FRONTEND_URLS=()
+        MARTYROLOGY_FRONTEND_DEV_MODE="false"
+        MARTYROLOGY_FRONTEND_LABEL="$TARGET"
+        ;;
+esac
 # Auth.js v5 mounts its callback at /api/auth/callback/<provider-id>, and the
 # built-in Zitadel provider's id is "zitadel". This string and the frontend's
 # provider id must change together or sign-in fails at the redirect.
@@ -889,7 +922,16 @@ _emit_martyrology_frontend_app() {
 }
 
 do_provision_martyrology_frontend() {
-    log "Provisioning Martyrology Frontend OIDC app"
+    log "Provisioning Martyrology Frontend OIDC app ($MARTYROLOGY_FRONTEND_LABEL)"
+    # No origin defined for this target — skip before touching the API, so
+    # `--all --target staging` sweeps past this action instead of registering
+    # an app with an empty redirect URI list.
+    if [[ ${#MARTYROLOGY_FRONTEND_URLS[@]} -eq 0 ]]; then
+        warn "No Martyrology frontend origin is defined for --target $TARGET; skipping."
+        warn "  Martyrology has no staging deployment yet. Use --target local"
+        warn "  (localhost, against a local Zitadel) or --target production."
+        return 0
+    fi
     local org_id
     org_id=$(find_org_id "$MARTYROLOGY_ORG_NAME")
     if [[ -z "$org_id" ]]; then
@@ -910,7 +952,8 @@ do_provision_martyrology_frontend() {
     echo "ZITADEL_PROJECT_ID=$project_id"
 
     _emit_martyrology_frontend_app "$project_id" "$MARTYROLOGY_FRONTEND_APP_NAME" \
-        "false" "Production" "${MARTYROLOGY_FRONTEND_URLS[@]}"
+        "$MARTYROLOGY_FRONTEND_DEV_MODE" "$MARTYROLOGY_FRONTEND_LABEL" \
+        "${MARTYROLOGY_FRONTEND_URLS[@]}"
     echo
 }
 
