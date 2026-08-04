@@ -40,8 +40,8 @@ Plesk's Docker extension picks up `docker-compose.prod.yml` at the path above vi
   records the model ID this repo last uploaded to that store; the script only
   ever reads it — it never writes the file itself, since on the VPS the
   provisioner runs as `ubuntu` while `auth/models/` is owned by the sync user,
-  and because writing a tracked file there would dirty the checkout CI pulls
-  into with `--ff-only`. When a store's latest model doesn't match its lock,
+  and because writing a tracked file there would dirty the checkout that CI
+  pulls with `--ff-only`. When a store's latest model doesn't match its lock,
   the provisioner refuses (exit 7) and prints the lock JSON on stderr for a
   human to commit via PR, rather than uploading over an out-of-band change —
   `--force-model-upload` overrides when replacing the deployed model is the
