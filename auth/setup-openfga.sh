@@ -21,6 +21,9 @@
 #                          store NAME, without touching the model. Use after
 #                          editing a tuples file. Fails if the store, its model,
 #                          or the tuples file is missing.
+#   --force-model-upload   Override the lock-file guard (see auth/models/*.lock.json).
+#                          Without it, a store whose latest model was not uploaded by
+#                          this repo is left alone and the run exits non-zero.
 #
 # Structural tuples only: a `.tuples.json` file carries wiring the model is
 # useless without (for Martyrology, `edition → governed_by → governance_body`).
@@ -43,6 +46,7 @@ set -euo pipefail
 
 TARGET=""
 ACTIONS=()
+FORCE_MODEL_UPLOAD="false"
 # Store names ride along inside each ACTIONS entry ("create-store:NAME") rather
 # than in shared scalars: with one SINGLE_STORE/SEED_STORE variable, a second
 # --create-store overwrote the first and the same store was provisioned twice
@@ -65,6 +69,9 @@ Actions:
                             Shorthand for --create-store Martyrology
   --seed-tuples NAME        Seed auth/models/NAME.tuples.json into the existing
                             store NAME (no model upload)
+  --force-model-upload      Upload the model file even when the store's latest model
+                            is not the one recorded in auth/models/NAME.lock.json
+                            (i.e. someone uploaded out-of-band). Off by default.
 
 Environment variables (sourced from .env.\$target):
   OPENFGA_API_URL           (default: https://authz.catholicdigitalcommons.org)
@@ -81,6 +88,7 @@ while [[ $# -gt 0 ]]; do
         --create-litcal-store)  ACTIONS+=("create-litcal-store"); shift ;;
         --create-martyrology-store) ACTIONS+=("create-martyrology-store"); shift ;;
         --seed-tuples)          [[ $# -ge 2 ]] || usage; ACTIONS+=("seed-tuples:$2"); shift 2 ;;
+        --force-model-upload)   FORCE_MODEL_UPLOAD="true"; shift ;;
         -h|--help)              usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
     esac
@@ -201,8 +209,39 @@ create_or_find_store() {
     echo "$store_id"
 }
 
+# --- model lock ------------------------------------------------------------
+#
+# auth/models/<name>.lock.json records the model ID THIS repo last uploaded to
+# the store. Under centralized ownership (see docs/superpowers/specs/
+# 2026-08-04-openfga-model-ownership-and-upgrade-design.md) cdcf-infra is the
+# only writer of models, so a store whose latest model ID is not the recorded
+# one means someone uploaded out-of-band. Uploading over that would silently
+# revert their work — which is exactly what nearly happened to the
+# LiturgicalCalendar store on 2026-08-04 — so we refuse instead.
+#
+# Three fields only. No timestamp or commit hash: the lock file is committed,
+# so `git log auth/models/<name>.lock.json` is the provenance record.
+
+lock_file_for() {
+    echo "${MODELS_DIR}/${1}.lock.json"
+}
+
+read_lock_model_id() {
+    local lock; lock=$(lock_file_for "$1")
+    [[ -f "$lock" ]] || { echo ""; return 0; }
+    jq -r '.model_id // empty' "$lock" 2>/dev/null || echo ""
+}
+
+write_lock() {
+    local name="$1" store_id="$2" model_id="$3"
+    local lock; lock=$(lock_file_for "$name")
+    jq -n --arg n "$name" --arg s "$store_id" --arg m "$model_id" \
+        '{store_name: $n, store_id: $s, model_id: $m}' > "$lock"
+    ok "Lock updated: $(basename "$lock") → $model_id"
+}
+
 upload_model_if_changed() {
-    local store_id="$1" model_file="$2"
+    local store_id="$1" model_file="$2" name="$3"
     [[ ! -f "$model_file" ]] && { err "Model file not found: $model_file"; exit 4; }
 
     log "Checking current model in store"
@@ -212,6 +251,21 @@ upload_model_if_changed() {
     existing_model_id=$(echo "$existing_models" | jq -r '.authorization_models[0]?.id // empty')
 
     if [[ -n "$existing_model_id" ]]; then
+        local locked_model_id; locked_model_id=$(read_lock_model_id "$name")
+        if [[ -n "$locked_model_id" && "$locked_model_id" != "$existing_model_id" ]]; then
+            if [[ "$FORCE_MODEL_UPLOAD" == "true" ]]; then
+                warn "Store's latest model ($existing_model_id) is not the locked one ($locked_model_id) — proceeding anyway (--force-model-upload)"
+            else
+                err "Refusing to touch the model for store '$name'."
+                err "  store's latest: $existing_model_id"
+                err "  lock file says: $locked_model_id"
+                err "Someone uploaded a model outside this repo. Uploading now would revert it."
+                err "Resolve by syncing $(basename "$model_file") from the source of truth and updating"
+                err "$(basename "$(lock_file_for "$name")"), or re-run with --force-model-upload if you"
+                err "really mean to replace the deployed model."
+                exit 7
+            fi
+        fi
         # Normalize both sides to compare (strip empty/null fields the server
         # adds: "metadata": null, "relations": {}, "module": "", "condition": "").
         #
@@ -230,8 +284,17 @@ upload_model_if_changed() {
         file_model=$(jq -cS ".type_definitions | $normalize" "$model_file")
         if [[ "$server_model" == "$file_model" ]]; then
             ok "Model unchanged ($existing_model_id) — no upload needed"
+            [[ "$(read_lock_model_id "$name")" == "$existing_model_id" ]] \
+                || write_lock "$name" "$store_id" "$existing_model_id"
             echo "$existing_model_id"
             return 0
+        fi
+        if [[ -z "$locked_model_id" && "$FORCE_MODEL_UPLOAD" != "true" ]]; then
+            err "No lock file for store '$name' and the model file differs from the store's latest ($existing_model_id)."
+            err "This repo has no record of uploading that model, so it cannot tell an intended"
+            err "update from a stale file. Sync the file and re-run (an identical file adopts the"
+            err "lock silently), or pass --force-model-upload to upload this file as the new model."
+            exit 7
         fi
         warn "Model differs from file — uploading new version"
     else
@@ -249,6 +312,7 @@ upload_model_if_changed() {
         exit 5
     fi
     ok "Uploaded model: $model_id"
+    write_lock "$name" "$store_id" "$model_id"
     echo "$model_id"
 }
 
@@ -414,7 +478,7 @@ do_create_store() {
 
     local store_id model_id
     store_id=$(create_or_find_store "$name")
-    model_id=$(upload_model_if_changed "$store_id" "$model_file")
+    model_id=$(upload_model_if_changed "$store_id" "$model_file" "$name")
     seed_tuples_if_present "$store_id" "$model_id" "$name"
 
     echo
