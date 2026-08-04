@@ -363,12 +363,17 @@ the same modified model Step 3 used:
 
 ```bash
 STORE=$(curl -sS -H "Authorization: Bearer test-key" http://127.0.0.1:18081/stores | jq -r '.stores[] | select(.name=="LiturgicalCalendar") | .id')
-OOB_MODEL=$(curl -sS -X POST "http://127.0.0.1:18081/stores/$STORE/authorization-models" \
-  -H "Authorization: Bearer test-key" -H 'Content-Type: application/json' -d @/tmp/oob-model.json | jq -r .authorization_model_id)
+OOB_MODEL=$(curl -sS -f -X POST "http://127.0.0.1:18081/stores/$STORE/authorization-models" \
+  -H "Authorization: Bearer test-key" -H 'Content-Type: application/json' -d @/tmp/oob-model.json | jq -r '.authorization_model_id // empty')
+[[ -n "$OOB_MODEL" && "$OOB_MODEL" != "null" ]] || { echo "out-of-band upload failed — aborting before it produces a false pass below" >&2; exit 1; }
 echo "out-of-band model: $OOB_MODEL"
 ```
 
-No lock file exists yet, so the adoption branch must fire:
+No lock file exists yet, and the model just uploaded no longer matches
+`models/LiturgicalCalendar.json`, so the **no-lock refusal branch** must fire
+— not adoption. (Adoption is the silent lock-write in the "unchanged" branch,
+Step 6 above, and only applies when the file and the store's model already
+match.)
 
 ```bash
 cd auth && ./setup-openfga.sh --target local --create-store LiturgicalCalendar; echo "exit=$?"; cd ..
@@ -472,17 +477,21 @@ KEY=$(ssh ubuntu@catholicdigitalcommons.org \
   "grep -m1 '^OPENFGA_PRESHARED_KEY=' /opt/cdcf-auth/auth/.env.production | cut -d= -f2- | tr -d '\"'")
 NORMALIZE='walk(if type == "object" then with_entries(select(.value != null and .value != "" and (.value != {} or .key == "this"))) else . end)'
 
-for pair in "LiturgicalCalendar:01KRSCF4GVX0X4ZNXXJQEC4XXJ" "Martyrology:01KZ1M9NJR1JHTMTV091X5DMYZ"; do
-  name=${pair%%:*}; store=${pair##*:}
+for pair in "LiturgicalCalendar:01KRSCF4GVX0X4ZNXXJQEC4XXJ:01KW4FW2ZCT1E693PY8D9TJEFM" "Martyrology:01KZ1M9NJR1JHTMTV091X5DMYZ:01KZ3VZC7RAAX7TEMMVAYEBPW8"; do
+  name=${pair%%:*}; rest=${pair#*:}; store=${rest%%:*}; expected_id=${rest##*:}
   ssh ubuntu@catholicdigitalcommons.org \
     "curl -sS 'http://127.0.0.1:8081/stores/$store/authorization-models' -H 'Authorization: Bearer $KEY'" \
     > "/tmp/deployed-$name.json"
+  # Extract BOTH the id and the content from this one response — comparing
+  # content alone and discarding the id it came with is how a coincidentally
+  # identical model at a different id would slip past this check.
+  deployed_id=$(jq -r '.authorization_models[0].id // empty' "/tmp/deployed-$name.json")
   deployed=$(jq -cS ".authorization_models[0].type_definitions | $NORMALIZE" "/tmp/deployed-$name.json")
   file=$(jq -cS ".type_definitions | $NORMALIZE" "auth/models/$name.json")
-  if [[ "$deployed" == "$file" ]]; then
-    echo "$name: content matches — safe to lock"
+  if [[ "$deployed_id" == "$expected_id" && "$deployed" == "$file" ]]; then
+    echo "$name: id ($deployed_id) and content match — safe to lock"
   else
-    echo "$name: CONTENT MISMATCH — do NOT write a lock for this store; sync auth/models/$name.json from the deployed model (or investigate) before Step 3" >&2
+    echo "$name: MISMATCH (deployed id=$deployed_id expected id=$expected_id) — do NOT write a lock for this store; sync auth/models/$name.json from the deployed model (or investigate) before Step 3" >&2
   fi
 done
 ```
@@ -818,8 +827,25 @@ cd /opt/cdcf-auth/auth
 KEY=$(grep -m1 '^OPENFGA_PRESHARED_KEY=' .env.production | cut -d= -f2- | tr -d '"')
 MISMATCH=0
 for n in LiturgicalCalendar Martyrology; do
-  s=$(jq -r .store_id "models/$n.lock.json"); m=$(jq -r .model_id "models/$n.lock.json")
-  live=$(curl -sS "http://127.0.0.1:8081/stores/$s/authorization-models?page_size=1" -H "Authorization: Bearer $KEY" | jq -r '.authorization_models[0].id')
+  # jq -er with `// empty`: a missing field prints nothing and jq exits
+  # non-zero, instead of printing the literal string "null" — two "null"s
+  # (a broken lock file and a failed API call) would otherwise compare equal
+  # and read as a pass.
+  if ! s=$(jq -er '.store_id // empty' "models/$n.lock.json") || [[ -z "$s" ]]; then
+    echo "$n: FAILURE — lock file missing store_id"; MISMATCH=1; continue
+  fi
+  if ! m=$(jq -er '.model_id // empty' "models/$n.lock.json") || [[ -z "$m" ]]; then
+    echo "$n: FAILURE — lock file missing model_id"; MISMATCH=1; continue
+  fi
+  # Status-code check rather than `curl --fail-with-body` (requires curl
+  # >= 7.76.0, not guaranteed on the VPS).
+  http_code=$(curl -sS -o "/tmp/live-$n.json" -w '%{http_code}' "http://127.0.0.1:8081/stores/$s/authorization-models?page_size=1" -H "Authorization: Bearer $KEY")
+  if [[ "$http_code" != "200" ]]; then
+    echo "$n: FAILURE — live model request returned HTTP $http_code"; MISMATCH=1; continue
+  fi
+  if ! live=$(jq -er '.authorization_models[0].id // empty' "/tmp/live-$n.json") || [[ -z "$live" ]]; then
+    echo "$n: FAILURE — live response has no model id"; MISMATCH=1; continue
+  fi
   if [[ "$m" == "$live" ]]; then
     echo "$n: OK ($m)"
   else
@@ -834,8 +860,10 @@ EOS
 Expected: `OK` for both, and the command exits 0. A mismatch prints `MISMATCH` for that
 store **and** makes the script exit 1 — the explicit flag means a mismatch fails the
 check instead of being swallowed by an `&&`/`||` chain that always reports success.
-A mismatch means someone uploaded between Task 3 and now — investigate before running
-any store action.
+A `FAILURE` line (broken lock file, non-200 from the live request, or a response with
+no model id) also sets the exit code — it is treated the same as a mismatch rather than
+comparing empty-to-empty and passing. A mismatch or failure means investigate before
+running any store action.
 
 ---
 

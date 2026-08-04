@@ -227,7 +227,10 @@ This stack is coming from v1.8.12, so it genuinely applies `006_add_collate_inde
 ```bash
 docker compose down -v
 docker compose up -d db openfga-migrate
-MIGRATE_EXIT=$(docker wait "$(docker compose ps -q openfga-migrate)")
+# -a: a fast one-shot may already have exited before this line runs, and
+# `docker compose ps -q` without -a only lists running containers — it would
+# return empty here and `docker wait ""` would fail.
+MIGRATE_EXIT=$(docker wait "$(docker compose ps -a -q openfga-migrate)")
 docker compose logs openfga-migrate | tail -20
 [ "$MIGRATE_EXIT" = "0" ] || { echo "openfga-migrate exited $MIGRATE_EXIT" >&2; exit 1; }
 ```
@@ -367,9 +370,23 @@ ssh ubuntu@catholicdigitalcommons.org
 cd /opt/cdcf-auth/auth
 docker compose -f docker-compose.prod.yml pull openfga openfga-migrate
 docker compose -f docker-compose.prod.yml up -d openfga-migrate
-MIGRATE_EXIT=$(docker wait "$(docker compose -f docker-compose.prod.yml ps -q openfga-migrate)")
-docker compose -f docker-compose.prod.yml logs --tail=30 openfga-migrate
+# -a: a fast one-shot may already have exited before this line runs, and
+# `docker compose ps -q` without -a only lists running containers — it would
+# return empty here and `docker wait ""` would fail.
+MIGRATE_EXIT=$(docker wait "$(docker compose -f docker-compose.prod.yml ps -a -q openfga-migrate)")
+docker compose -f docker-compose.prod.yml logs --tail=30 openfga-migrate | tee /tmp/openfga-migrate.log
 [ "$MIGRATE_EXIT" = "0" ] || { echo "openfga-migrate exited $MIGRATE_EXIT" >&2; exit 1; }
+# Exit 0 only proves `migrate` ran without error, not that it left the store
+# untouched — for an upgrade against a live store that's the weaker claim.
+# `migrate` logs the pre-migration schema version as `"current version": N`
+# before it applies anything (verified against the v1.15.1 image: a fresh run
+# logs `"current version": 0`, a repeat run against an already-migrated
+# database logs `"current version": 6` — both then print the same
+# "running all migrations" / "migration done" lines, so those two lines are
+# NOT a usable no-op signal on their own). The Postgres migration set is fixed
+# at 001-006 (see Global Constraints), so a pre-migration version of 6 proves
+# there was nothing left to apply.
+grep -q '"current version": 6' /tmp/openfga-migrate.log || { echo "openfga-migrate started from a schema version other than 6 — it may have applied changes; investigate before continuing" >&2; exit 1; }
 ```
 
 Expected: migrate exits 0 having applied nothing — asserted above before continuing.
