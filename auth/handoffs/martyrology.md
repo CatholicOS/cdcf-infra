@@ -89,7 +89,7 @@ Provisioned 2026-08-02 against production.
   - **Client ID** (→ `MARTYROLOGY_ZITADEL_CLIENT_ID`): `384518610325929987`
   - Auth method: `API_AUTH_METHOD_TYPE_BASIC` — confidential client with a `client_secret`
   - **Client secret**: **out-of-band** (one-time emit — see Warning 1). Never committed to this file.
-- **Roles defined** (added by Task 6 of the authz-roles-and-grants plan; declared in `setup-zitadel.sh`'s `MARTYROLOGY_ROLES`, not yet applied to the live production Project — re-run `./setup-zitadel.sh --target production --provision-martyrology` to create them; `create_roles` is idempotent and skips roles that already exist):
+- **Roles defined** (added by Task 6 of the authz-roles-and-grants plan; declared in `setup-zitadel.sh`'s `MARTYROLOGY_ROLES`). All three exist on the live production Project — verified 2026-08-04 via `ListProjectRoles` on project `384518610174869507`. `create_roles` is idempotent, so re-running `./setup-zitadel.sh --target production --provision-martyrology` is safe and skips them:
 
   | Role key | Display name | Enforced by `martyrology-api`? |
   | --- | --- | --- |
@@ -112,7 +112,7 @@ Neither role bypasses OpenFGA. A caller holding `martyrology_editor` still needs
 - **API URL**: `https://authz.catholicdigitalcommons.org`
 - **Store name**: `Martyrology`
 - **Store ID**: `01KZ1M9NJR1JHTMTV091X5DMYZ`
-- **Authorization model ID**: `01KZ1M9NM7YRM5PB1KH2WF67XX`
+- **Authorization model ID**: `01KZ3VZC7RAAX7TEMMVAYEBPW8` — the Task-6 model (adds `platform` / `on_platform`). Supersedes `01KZ1M9NM7YRM5PB1KH2WF67XX`, the pre-Task-6 model, which still exists in the store's model history but is no longer the latest and is not what the API is pinned to.
 - **Model source**: `cdcf-infra/auth/models/Martyrology.json` (schema 1.1)
 - **Preshared key**: **out-of-band**
 
@@ -200,13 +200,26 @@ grant, not just the first, is therefore made out-of-band with the curl above,
 substituting the new operator's `sub`. Revoking one is the same request with
 `"deletes"` in place of `"writes"`.
 
-**Not yet live as of this commit.** The model file here declares `platform`/`on_platform`, but the production OpenFGA store still runs the pre-Task-6 model until it is re-uploaded (rollout Step 5: `./setup-openfga.sh --target production --create-martyrology-store`), and `MARTYROLOGY_OPENFGA_MODEL_ID` in `/etc/martyrology/api.env` must be repointed at the resulting model ID (rollout Step 6) before superuser inheritance resolves for the running API. Against the old model, a pinned check for `on_platform` simply has no such relation to evaluate — checks resolve to `false`, safely but uselessly.
+### Rollout status — live on production
+
+**Rolled out. Verified against production on 2026-08-04:**
+
+| Rollout step | State |
+| --- | --- |
+| Step 5 — upload the Task-6 model (`./setup-openfga.sh --target production --create-martyrology-store`) | ✅ Done. Latest model in store `01KZ1M9NJR1JHTMTV091X5DMYZ` is `01KZ3VZC7RAAX7TEMMVAYEBPW8`, declaring types `user`, `platform`, `governance_body`, `edition`, with `on_platform` present on `governance_body`. |
+| Step 5 (cont.) — structural tuples | ✅ All 11 present: 8 `governed_by` (5 `editio_typica` + 1 `cei` + 2 `unassigned_en_translatio`) and 3 `on_platform`. |
+| Step 6 — repoint `MARTYROLOGY_OPENFGA_MODEL_ID` in `/etc/martyrology/api.env` | ✅ Done. Pinned to `01KZ3VZC7RAAX7TEMMVAYEBPW8`; `MARTYROLOGY_OPENFGA_STORE_ID` unchanged. |
+| Step 6 (cont.) — first superuser bootstrap tuple | ✅ Written. Exactly one `superuser` tuple on `platform:martyrology`, for `sub` `384646678734438403` (`priest@johnromanodorazio.com`, the same `sub` already recorded under "Verified end to end" below). No second superuser exists. |
+
+Superuser inheritance therefore resolves for the running API: a platform superuser is `admin` on `editio_typica`, `cei` and `unassigned_en_translatio` without a per-body tuple.
+
+Kept as background, because it is the failure mode if the pin is ever rolled back: against the **old** model a pinned check for `on_platform` has no such relation to evaluate, so checks resolve to `false` — safely, but uselessly, and with no error to make the misconfiguration obvious.
 
 ---
 
 ## Tuple seeding — automated
 
-The `governed_by` tuples are structural data the model is useless without: with no tuples, every check returns `false` for everyone, including admins. They are **version-controlled** in `cdcf-infra/auth/models/Martyrology.tuples.json` and applied by `setup-openfga.sh`, which seeds them automatically after the model upload:
+The structural tuples are data the model is useless without: with no tuples, every check returns `false` for everyone, including admins. The file declares **11** — the 8 `governed_by` tuples (which body governs which edition) plus the 3 `on_platform` tuples added by Task 6 (which platform each body sits on). They are **version-controlled** in `cdcf-infra/auth/models/Martyrology.tuples.json` and applied by `setup-openfga.sh`, which seeds them automatically after the model upload:
 
 ```bash
 cd /opt/cdcf-auth/auth
@@ -216,8 +229,10 @@ cd /opt/cdcf-auth/auth
 ```
     ✓ Uploaded model: <model id>
 [setup-openfga] Seeding structural tuples from .../auth/models/Martyrology.tuples.json
-    ✓ Wrote 8 new structural tuple(s) (8 declared in file)
+    ✓ Wrote 11 new structural tuple(s) (11 declared in file)
 ```
+
+On a store already seeded before Task 6, the same run writes only the difference — `✓ Wrote 3 new structural tuple(s) (11 declared in file)`, the three `on_platform` tuples.
 
 To re-apply after editing the tuples file — without re-uploading the model:
 
@@ -227,18 +242,38 @@ To re-apply after editing the tuples file — without re-uploading the model:
 
 Properties of the seeding, all relied upon in practice:
 
-- **Idempotent.** OpenFGA rejects a write of a tuple that already exists, and a write is transactional, so one duplicate would fail the whole batch. The script reads the store's existing tuples first (paginating fully) and writes only the difference. A second run reports `All 8 structural tuple(s) already present — nothing to write`.
+- **Idempotent.** OpenFGA rejects a write of a tuple that already exists, and a write is transactional, so one duplicate would fail the whole batch. The script reads the store's existing tuples first (paginating fully) and writes only the difference. A second run reports `All 11 structural tuple(s) already present — nothing to write`.
 - **Fails loudly.** A tuples file that is not valid JSON, has no `.tuples` array, or contains an entry missing `user`/`relation`/`object` aborts with a non-zero exit before anything is written. A silently skipped seed would leave the model inert while the run looked successful, so it is treated as fatal rather than as a warning.
-- **Never deletes.** Tuples in the store that use a relation the file manages (`governed_by`) but are absent from the file are reported as drift and **left in place**. Removing them is a deliberate operator decision, not something this script does. Human role grants are untouched, because `reader`/`editor`/`admin` are not relations the file manages.
+- **Never deletes.** The managed relations are derived from the file itself (the distinct relations it declares — now `governed_by` **and** `on_platform`). Tuples in the store using one of those relations but absent from the file are reported as drift and **left in place**. Removing them is a deliberate operator decision, not something this script does. Human role grants are untouched, because `reader`/`editor`/`admin` are not relations the file manages.
 - **Absent file is a no-op** for `--create-store`, so stores without structural tuples (e.g. `LiturgicalCalendar`) are unaffected. For an explicit `--seed-tuples NAME`, a missing file is an error.
 
 ### Verify
 
+A `tuple_key` filtered by `relation` alone is **rejected** by OpenFGA's Read API — `validation_error: the 'tuple_key' field was provided but the object type field is required and both the object id and user cannot be empty`. Piped into `jq '.tuples | length'` that error prints a plausible-looking `0`, which reads as "nothing seeded" rather than "malformed query". Always pin a `user` alongside the object type:
+
 ```bash
-curl -sS -X POST "${OPENFGA_INTERNAL_URL}/stores/${MARTYROLOGY_STORE_ID}/read" \
-  -H "Authorization: Bearer ${OPENFGA_PRESHARED_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"tuple_key":{"relation":"governed_by"}}' | jq '.tuples | length'   # → 8
+read_tuples() {   # $1 = JSON tuple_key
+  curl -sS -X POST "${OPENFGA_INTERNAL_URL}/stores/${MARTYROLOGY_STORE_ID}/read" \
+    -H "Authorization: Bearer ${OPENFGA_PRESHARED_KEY}" \
+    -H "Content-Type: application/json" \
+    -d "{\"tuple_key\":$1,\"page_size\":100}"
+}
+
+# governed_by — per body, because the object type alone isn't a legal filter
+for b in editio_typica cei unassigned_en_translatio; do
+  echo -n "$b: "
+  read_tuples "{\"user\":\"governance_body:$b\",\"relation\":\"governed_by\",\"object\":\"edition:\"}" \
+    | jq '.tuples | length'
+done
+# → editio_typica: 5, cei: 1, unassigned_en_translatio: 2  (8 total)
+
+# on_platform
+read_tuples '{"user":"platform:martyrology","relation":"on_platform","object":"governance_body:"}' \
+  | jq '.tuples | length'   # → 3
+
+# superuser grants (expect exactly the operators you bootstrapped)
+read_tuples '{"object":"platform:martyrology"}' \
+  | jq -r '.tuples[].key | "\(.user)  \(.relation)  \(.object)"'
 ```
 
 ### Grant a person a role on a body — still manual, deliberately
@@ -295,8 +330,10 @@ MARTYROLOGY_ZITADEL_CLIENT_SECRET=<out-of-band — one-time emit, see Warning 1>
 
 MARTYROLOGY_OPENFGA_API_URL=https://authz.catholicdigitalcommons.org
 MARTYROLOGY_OPENFGA_STORE_ID=01KZ1M9NJR1JHTMTV091X5DMYZ
-MARTYROLOGY_OPENFGA_MODEL_ID=01KZ1M9NM7YRM5PB1KH2WF67XX
+MARTYROLOGY_OPENFGA_MODEL_ID=01KZ3VZC7RAAX7TEMMVAYEBPW8
 ```
+
+(The `MODEL_ID` above is the Task-6 model, and matches what is pinned in the live file as of 2026-08-04. The pin is deliberate: the API checks against a fixed model rather than "latest", so uploading a new model does **not** take effect until this value is updated.)
 
 All six must be set together — see Warning 2.
 
@@ -385,13 +422,13 @@ concluding anything, in two steps — the two tokens carry different things:
 
 - ~~**Tuple seeding is manual.**~~ **Done** — `setup-openfga.sh` now seeds `auth/models/Martyrology.tuples.json` idempotently after the model upload, and `--seed-tuples Martyrology` re-applies it on its own. See "Tuple seeding — automated" above.
 - **Governance for the English editions** — see the `unassigned_en_translatio` section above. Resolving it means editing the `governed_by` entry in `auth/models/Martyrology.tuples.json` and re-running `--seed-tuples Martyrology`; note that re-pointing an edition **adds** the new tuple and reports the old one as drift rather than deleting it, so the stale tuple must be removed explicitly.
-- ~~**Human role grants** — no individual has any role on any body.~~ **Partly done, 2026-08-03.** `priest@johnromanodorazio.com` (`sub` `384646678734438403`) holds the Zitadel project role `admin`, verified in a live token — see "Verified end to end" below. **That is a Zitadel role, not an OpenFGA grant, and it confers no authority on its own.** Per the note beside `MARTYROLOGY_ROLES` in `setup-zitadel.sh`, project roles are a coarse population gate checked *alongside* — never instead of — OpenFGA; every per-resource decision is still a Check against the `Martyrology` store. Holding Zitadel `admin` implies no `admin` tuple on any `governance_body`, and the two are granted by entirely separate operations. The mechanism is unchanged and still applies to everyone else: each curator signs in to Zitadel once so a `sub` exists, then gets a grant, and these are deliberately **not** seeded from the tuples file.
-- **Platform model not yet uploaded** — Task 6 added `platform`/`on_platform` to `auth/models/Martyrology.json` and the three `on_platform` tuples to `auth/models/Martyrology.tuples.json`, but production still runs the pre-Task-6 model until `./setup-openfga.sh --target production --create-martyrology-store` is re-run (rollout Step 5) and `MARTYROLOGY_OPENFGA_MODEL_ID` is repointed in `/etc/martyrology/api.env` (rollout Step 6). See "Platform type and superuser bootstrap" above.
-- **Superuser bootstrap — needs re-checking, the old text is wrong.** This entry used to say no bootstrap tuple had been written and that nobody held `admin` on any body. That is disproven: on 2026-08-03 a live authenticated request for a restricted 2004 edition returned unredacted text, which means `texts_allowed()` → OpenFGA `can_read_texts` resolved **true** for `priest@johnromanodorazio.com`. Some grant path therefore exists. **Which** path was not determined, and the model shows the candidates are narrower than "a tuple somewhere".
+- ~~**Human role grants** — no individual has any role on any body.~~ **Partly done, 2026-08-03.** `priest@johnromanodorazio.com` (`sub` `384646678734438403`) holds the Zitadel project role `admin`, verified in a live token — see "Verified end to end" below. **That is a Zitadel role, not an OpenFGA grant, and it confers no authority on its own.** Per the note beside `MARTYROLOGY_ROLES` in `setup-zitadel.sh`, project roles are a coarse population gate checked *alongside* — never instead of — OpenFGA; every per-resource decision is still a Check against the `Martyrology` store. Holding Zitadel `admin` implies no `admin` tuple on any `governance_body`, and the two are granted by entirely separate operations. The mechanism is unchanged and still applies to everyone else: each curator signs in to Zitadel once so a `sub` exists, then gets a grant, and these are deliberately **not** seeded from the tuples file. As of 2026-08-04 the store still holds **no direct grant on any body** — the one OpenFGA grant that exists is the `superuser` tuple on `platform:martyrology` (next entry but one), which confers body `admin` by inheritance.
+- ~~**Platform model not yet uploaded**~~ **Done, 2026-08-03.** The Task-6 model is uploaded (`01KZ3VZC7RAAX7TEMMVAYEBPW8`), the three `on_platform` tuples are seeded, and `/etc/martyrology/api.env` is pinned to it. See "Rollout status — live on production" above.
+- ~~**Superuser bootstrap — needs re-checking, the old text is wrong.**~~ **Resolved by reading production, 2026-08-04.** The question was which grant path let `priest@johnromanodorazio.com` read the restricted 2004 texts on 2026-08-03: a direct `reader`/`editor`/`admin` tuple on the governing body, or the `platform:martyrology` superuser path. The store answers it — reading every tuple on all three governance bodies returns **only the three structural `on_platform` tuples**. There is no direct `reader`, `editor` or `admin` tuple anywhere in the store, on `editio_typica` or any other body. The only grant present is `user:384646678734438403 → superuser → platform:martyrology`.
 
-Per `auth/models/Martyrology.json`, `edition:can_read_texts` resolves through `governed_by` to `governance_body:reader`, and on a body `reader = direct ∪ editor`, `editor = direct ∪ admin`, `admin = direct ∪ (on_platform → platform:superuser)`. So exactly two families grant it: **a direct `reader`, `editor` or `admin` tuple on the body governing `martyrologium_romanum_2004`**, or **the `platform:martyrology` superuser path**.
+  **It is the superuser path.** `can_read_texts` on `edition:martyrologium_romanum_2004` resolves `governed_by → governance_body:editio_typica`, then `reader ⊃ editor ⊃ admin`, and `admin` picks up `superuser from on_platform`.
 
-Those two are not equally available. If the entry above is right that production still runs the pre-Task-6 model, then `platform`/`on_platform` are not in the deployed model at all and the superuser path **cannot** be what fired — leaving a direct tuple on the governing body as the only possibility. That deduction is only as good as the "Platform model not yet uploaded" entry, which is itself untested.
+  The earlier deduction inverted this because it accepted the stale "production still runs the pre-Task-6 model" premise and reasoned from it. That premise was already false when written: the model's ULID timestamp puts its upload at 2026-08-03T13:10Z, and `/etc/martyrology/api.env` was last modified at 13:32 the same day — both before the observation was recorded. Worth keeping as a caution: the entry reasoned confidently from an untested assumption and reached the opposite of the truth, which is exactly what it warned against.
 
-Resolve it with two reads rather than reasoning: check `MARTYROLOGY_OPENFGA_MODEL_ID` in `/etc/martyrology/api.env` against the model actually uploaded, then read the store for tuples on the governing body. An assumption about the mechanism is exactly what this entry got wrong before.
+  One residual unknown, stated rather than glossed: the exact clock time of the 2026-08-03 observation was not recorded, so this identifies the only path that *can* grant it in the store's current state. Since `setup-openfga.sh` never deletes tuples, a direct grant that once existed and vanished would require a manual delete — no evidence of one.
 - ~~**Zitadel project roles not yet created in production**~~ **Done.** All three of `MARTYROLOGY_ROLES` (`admin`, `martyrology_editor`, `developer`) exist on the live `MartyrologyAPI` Project, confirmed by the owner on 2026-08-03 and corroborated by a live token carrying `admin`. `create_roles` remains idempotent if it is ever re-run.
