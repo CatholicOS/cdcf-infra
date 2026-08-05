@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Move every OpenFGA deployment — the production umbrella instance and three local dev stacks — to `openfga/openfga:v1.18.2`, having first verified the image assumptions the composes depend on.
+**Goal:** Move every OpenFGA deployment — the production umbrella instance and three local dev stacks — to `openfga/openfga:v1.18.2`, having first verified the image assumptions the composes depend on. Then (Tasks 6-8, independent of the upgrade) enforce the model contract between cdcf-infra and its consumers in cdcf-infra's own CI, so a model change that breaks a consumer fails in the PR that causes it rather than downstream.
 
 **Architecture:** Image pin bumps only. No schema migration is involved on Postgres, so the `openfga-migrate` one-shot no-ops and rollback is a pin revert. Local stacks move first so any surprise surfaces off production; production moves last and is verified with health, model-listing and Check probes.
 
@@ -448,3 +448,192 @@ There is no schema change to undo, so this is complete on its own. Then revert t
 - [ ] **Step 6: Record the outcome**
 
 Add a line to `docs/SYSADMIN.md` §5.4 noting the production OpenFGA version and the date it was verified, then commit and push.
+
+---
+
+# Phase 2 — Model contract enforcement (Tasks 6-8)
+
+Independent of the upgrade above: these tasks share no state with Tasks 1-5 and ship as their own PRs. Run them in either order relative to the version bumps.
+
+**Why this exists.** Centralizing model ownership (PR #26) moved the LiturgicalCalendar model into cdcf-infra, which turned `LiturgicalCalendarAPI`'s `phpunit_tests/Services/OpenFgaModelTest.php` into a consumer-driven contract test: it asserts the types and relations LitCal's authorization code depends on, against a model another repo now provisions. That contract is currently enforced **only on the consumer side, after the fact** — a model change in cdcf-infra can merge, deploy, and only surface as a LitCal failure later. And it is enforced by an integration test that skips when no store is configured, so CI may report green while verifying nothing.
+
+These tasks add the provider-side half: cdcf-infra validates every model in `auth/models/` against its consumers' declared expectations before a model change can merge.
+
+**Design decisions, and why.**
+
+- **The consumer owns its expectations file.** It lives in the consumer's repo next to the code whose assumptions it encodes, and cdcf-infra fetches it. The alternative — cdcf-infra hosting a copy per consumer — recreates exactly the two-copies-no-authority problem that caused the drift PR #26 fixed.
+- **One file, both sides.** The consumer's test asserts against the same file cdcf-infra validates against, so the contract has a single source of truth rather than parallel hardcoded lists that drift.
+- **A fetch failure fails the check.** An unreachable expectations file means the contract is unverified, which is not the same as satisfied.
+
+## Global Constraints (Phase 2)
+
+- Expectations files are consumer-authored and consumer-hosted; cdcf-infra reads them and never writes them.
+- The validator must run with `jq` and `curl` only — cdcf-infra has no test framework and this is not the moment to introduce one.
+- A model that violates any consumer's expectations fails the check. No warn-only mode.
+
+## File Structure (Phase 2)
+
+| File | Responsibility | Change |
+| --- | --- | --- |
+| `auth/models/consumers.json` | Registry: which consumers depend on which store, and where their expectations live | Created |
+| `auth/validate-expectations.sh` | Validates each model against every consumer's expectations | Created |
+| `auth/models/testdata/` | Fixtures proving the validator catches violations | Created |
+| `.github/workflows/validate-models.yml` | Runs the validator on PRs touching models | Created |
+| **LitCal repo** `authz/openfga-expectations.json` | LitCal's declared expectations | Created |
+| **LitCal repo** `phpunit_tests/Services/OpenFgaModelTest.php` | Consumer-side contract test | Reads the expectations file instead of hardcoding invariants |
+
+---
+
+### Task 6: Expectations format, registry, and validator
+
+**Files:**
+- Create: `auth/models/consumers.json`
+- Create: `auth/validate-expectations.sh`
+- Create: `auth/models/testdata/expectations-valid.json`, `auth/models/testdata/expectations-violating.json`
+
+**Interfaces:**
+- Produces: `./auth/validate-expectations.sh [--expectations-file PATH --store NAME]` — with no arguments, reads `auth/models/consumers.json`, fetches each consumer's expectations, validates `auth/models/<store>.json`, exits 0 when all pass and non-zero on the first violation with a per-rule message. The flags let a caller validate a local file without network, which Task 6's own tests use.
+
+The expectations schema, which Task 8's consumer file must match:
+
+```json
+{
+  "consumer": "LiturgicalCalendarAPI",
+  "store": "LiturgicalCalendar",
+  "required_types": ["wider_region", "national_calendar"],
+  "required_relations": { "wider_region": ["admin", "editor", "viewer", "member_nation"] },
+  "forbidden_types": ["test_definition"],
+  "forbidden_relations": { "*": ["deleter"] },
+  "relation_includes": { "*": { "editor": ["admin"], "viewer": ["admin", "editor"] } }
+}
+```
+
+`"*"` as a type key means "every type in the model". `relation_includes` asserts that the named relation's rewrite contains a `computedUserset` on each listed relation — that is how LitCal's `editor`/`viewer`-are-unions-of-`admin` invariant is expressed declaratively.
+
+- [ ] **Step 1: Write the violating fixture first**
+
+Create `auth/models/testdata/expectations-violating.json` declaring expectations the **current** `auth/models/LiturgicalCalendar.json` cannot satisfy — require a type it lacks, forbid a relation it has (`viewer`), and assert a `relation_includes` it does not honour. This is the failing case the validator must catch; write it before the validator exists.
+
+- [ ] **Step 2: Write `expectations-valid.json`**
+
+Same shape, but asserting what the LitCal model genuinely provides today: the eight deployed types, `admin`/`editor`/`viewer` on each, `member_nation` on `wider_region`, `test_definition` forbidden, `deleter` forbidden everywhere, and the union rewrites.
+
+- [ ] **Step 3: Implement the validator**
+
+`auth/validate-expectations.sh`, following `setup-openfga.sh`'s conventions — `set -euo pipefail`, `log`/`ok`/`warn`/`err` to stderr, documented exit codes. Structure:
+
+```bash
+validate_one() {           # $1 = expectations JSON, $2 = model file
+    local exp="$1" model="$2" failures=0
+    # required_types / forbidden_types
+    # required_relations / forbidden_relations, honouring the "*" wildcard
+    # relation_includes: relation rewrite must contain computedUserset on each named relation
+    # every failure printed with consumer, rule and specifics; return 1 if any
+}
+```
+
+Report **every** violation, not just the first — an operator fixing a model wants the full list, and a validator that stops at the first failure turns one fix cycle into five.
+
+- [ ] **Step 4: Prove it fails on the violating fixture**
+
+```bash
+./auth/validate-expectations.sh --expectations-file auth/models/testdata/expectations-violating.json --store LiturgicalCalendar; echo "exit=$?"
+```
+
+Expected: non-zero, with a separate line per violated rule naming the type/relation.
+
+- [ ] **Step 5: Prove it passes on the valid fixture**
+
+```bash
+./auth/validate-expectations.sh --expectations-file auth/models/testdata/expectations-valid.json --store LiturgicalCalendar; echo "exit=$?"
+```
+
+Expected: `exit=0`.
+
+- [ ] **Step 6: Create the registry**
+
+`auth/models/consumers.json`:
+
+```json
+[
+  {
+    "consumer": "LiturgicalCalendarAPI",
+    "store": "LiturgicalCalendar",
+    "expectations_url": "https://raw.githubusercontent.com/Liturgical-Calendar/LiturgicalCalendarAPI/development/authz/openfga-expectations.json"
+  }
+]
+```
+
+Martyrology is deliberately absent until `martyrology-api` declares expectations — an empty contract is honest; a fabricated one is not.
+
+- [ ] **Step 7: Prove a fetch failure fails the run**
+
+Point a copy of the registry at a URL that 404s and show the validator exits non-zero with a message distinguishing "could not fetch" from "violated" — an unverified contract must never read as a satisfied one.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add auth/validate-expectations.sh auth/models/consumers.json auth/models/testdata/
+git commit -m "Validate models against consumer-declared expectations
+
+Centralizing model ownership made consumers depend on a model another repo
+provisions, with the contract enforced only downstream. This validates each
+model in auth/models/ against the expectations its consumers publish, so a
+breaking change fails here rather than in a consumer's test run later."
+```
+
+---
+
+### Task 7: Run the validator in CI
+
+**Files:**
+- Create: `.github/workflows/validate-models.yml`
+
+**Interfaces:**
+- Consumes: `auth/validate-expectations.sh` from Task 6.
+
+- [ ] **Step 1: Write the workflow**
+
+Triggers on `pull_request` touching `auth/models/**` and `auth/validate-expectations.sh`, plus `workflow_dispatch`. Ubuntu runner, `jq` and `curl` are preinstalled; run `./auth/validate-expectations.sh`. No secrets — every expectations URL is public. Note that this repo's only existing workflow is `sync-to-vps.yml`; match its conventions for naming and concurrency.
+
+- [ ] **Step 2: Prove the workflow fails on a violating model**
+
+On a scratch branch, edit `auth/models/LiturgicalCalendar.json` to drop `member_nation` from `wider_region`, push, and confirm the check fails with the expected message. **Delete the scratch branch afterwards** — it must never be merged.
+
+- [ ] **Step 3: Prove it passes on `main`'s model**
+
+`workflow_dispatch` on the unmodified branch; expect success.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .github/workflows/validate-models.yml
+git commit -m "Fail model PRs that break a consumer's declared expectations"
+```
+
+---
+
+### Task 8: Consumer side — LitCal declares its expectations
+
+**Files (in `LiturgicalCalendarAPI`, branch off `development`):**
+- Create: `authz/openfga-expectations.json`
+- Modify: `phpunit_tests/Services/OpenFgaModelTest.php`
+
+**Interfaces:**
+- Consumes: the schema from Task 6. The file this task creates is what `auth/models/consumers.json` already points at, so Task 6's registry entry goes live when this merges.
+
+- [ ] **Step 1: Write the expectations file**
+
+Encode exactly the invariants the test asserts today — no `deleter` anywhere, no `test_definition`, `editor`/`viewer` unions including `admin`, `member_nation` on `wider_region`, and the eight deployed types. Do not add aspirational expectations: this file is a contract another repo's CI enforces, so every line is a constraint someone else must keep satisfying.
+
+- [ ] **Step 2: Repoint the test at the file**
+
+`OpenFgaModelTest` keeps fetching the model from the seeded store, but derives its assertions from `authz/openfga-expectations.json` rather than hardcoding them, so the consumer test and the provider check cannot disagree. Keep the `markTestSkipped` behaviour when no store is configured.
+
+- [ ] **Step 3: Prove both directions**
+
+Run the suite against the seeded store and show the test executing and passing. Then temporarily add a bogus `required_types` entry to the expectations file, re-run, and show the test **failing** — a contract test that cannot fail is decoration. Restore the file.
+
+- [ ] **Step 4: Commit and open the PR against `development`**
+
+Do not merge. The PR body should state that `cdcf-infra`'s CI reads this file, so changes to it change what that repo is allowed to ship.
