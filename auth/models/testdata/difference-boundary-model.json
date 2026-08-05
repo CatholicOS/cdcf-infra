@@ -1,0 +1,32 @@
+{
+  "_comment": "Standalone test-only model for auth/validate-expectations.sh's own fixtures — not a real store. document.viewer is deliberately '(this OR admin) MINUS admin', i.e. every union member EXCEPT admin, so relation_includes must never report viewer as including admin.",
+  "schema_version": "1.1",
+  "type_definitions": [
+    { "type": "user" },
+    {
+      "type": "document",
+      "relations": {
+        "admin": { "this": {} },
+        "viewer": {
+          "difference": {
+            "base": {
+              "union": {
+                "child": [
+                  { "this": {} },
+                  { "computedUserset": { "relation": "admin" } }
+                ]
+              }
+            },
+            "subtract": { "computedUserset": { "relation": "admin" } }
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    }
+  ]
+}

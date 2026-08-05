@@ -1,0 +1,38 @@
+{
+  "_comment": "Standalone test-only model for auth/validate-expectations.sh's own fixtures — not a real store. resource.needs_both is admin AND editor (intersection): holding admin alone is necessary but not sufficient, so relation_includes must not report needs_both as including admin. resource.admin_gated is admin AND admin (the target present in every branch): holding admin alone IS sufficient there, so relation_includes must report it as including admin.",
+  "schema_version": "1.1",
+  "type_definitions": [
+    { "type": "user" },
+    {
+      "type": "resource",
+      "relations": {
+        "admin": { "this": {} },
+        "editor": { "this": {} },
+        "needs_both": {
+          "intersection": {
+            "child": [
+              { "computedUserset": { "relation": "admin" } },
+              { "computedUserset": { "relation": "editor" } }
+            ]
+          }
+        },
+        "admin_gated": {
+          "intersection": {
+            "child": [
+              { "computedUserset": { "relation": "admin" } },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "admin":       { "directly_related_user_types": [{ "type": "user" }] },
+          "editor":      { "directly_related_user_types": [{ "type": "user" }] },
+          "needs_both":  { "directly_related_user_types": [] },
+          "admin_gated": { "directly_related_user_types": [] }
+        }
+      }
+    }
+  ]
+}

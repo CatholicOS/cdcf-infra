@@ -1,0 +1,7 @@
+{
+  "_comment": "I4 regression fixture. `required_relation` (singular) and `relation_include` (singular) are plausible typos of real rule keys. Before schema validation, unknown keys were ignored, so this file — which the consumer believes asserts two contracts — reported as fully satisfied while asserting nothing.",
+  "consumer": "TestFixture-Typo-Key",
+  "store": "LiturgicalCalendar",
+  "required_relation": { "wider_region": ["deleter"] },
+  "relation_include": { "wider_region": { "admin": ["editor"] } }
+}

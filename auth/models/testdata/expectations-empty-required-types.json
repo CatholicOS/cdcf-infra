@@ -1,0 +1,7 @@
+{
+  "_comment": "Regression fixture for an empty required_types. Against wildcard-scope-model.json, `user` and `national_calendar` are bare types with no relations block at all; `diocesan_calendar` has admin/editor/viewer. required_types is declared as an empty array here, not omitted. Before the fix, requirementScope's `has(\"required_types\")` branch treated a present-but-empty list as the scope itself, so the \"*\" wildcard below resolved to [] and required_relations checked nothing, reporting satisfied. After the fix, an empty list falls back to the whole model, so user and national_calendar are in scope and both violate the wildcard's \"admin\" requirement.",
+  "consumer": "TestFixture-Empty-Required-Types",
+  "store": "wildcard-scope-model",
+  "required_types": [],
+  "required_relations": { "*": ["admin"] }
+}

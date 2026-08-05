@@ -1,0 +1,9 @@
+{
+  "_comment": "C2 regression fixture. Both relation_includes keys name a relation that does not exist: `nonexistent_rel` on no type at all (wildcard scope), and `nonexistent_rel_2` on the explicitly named `wider_region`. Before the fix, the per-type `select(has($namedRel))` skipped every type, leaving the rule vacuously satisfied — a consumer could name a relation the model has never had and be told the contract holds.",
+  "consumer": "TestFixture-Missing-Named-Relation",
+  "store": "LiturgicalCalendar",
+  "relation_includes": {
+    "*": { "nonexistent_rel": ["admin"] },
+    "wider_region": { "nonexistent_rel_2": ["admin"] }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "_comment": "Standalone test-only model for auth/validate-expectations.sh's own fixtures — not a real store. `national_calendar` deliberately has NO relations block at all, exactly as if one had been deleted wholesale from a real model; `diocesan_calendar` keeps admin/editor/viewer. A consumer whose required_relations uses the \"*\" wildcard must see national_calendar as in scope (it is in required_types) and report one violation per missing relation, rather than silently skipping the relation-less type — the more destructive edit must not be the one that passes.",
+  "schema_version": "1.1",
+  "type_definitions": [
+    { "type": "user" },
+    { "type": "national_calendar" },
+    {
+      "type": "diocesan_calendar",
+      "relations": {
+        "admin":  { "this": {} },
+        "editor": { "union": { "child": [ { "this": {} }, { "computedUserset": { "relation": "admin" } } ] } },
+        "viewer": { "union": { "child": [ { "this": {} }, { "computedUserset": { "relation": "editor" } } ] } }
+      },
+      "metadata": {
+        "relations": {
+          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
+          "editor": { "directly_related_user_types": [{ "type": "user" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    }
+  ]
+}
