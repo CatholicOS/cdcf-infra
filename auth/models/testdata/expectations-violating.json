@@ -1,0 +1,16 @@
+{
+  "_comment": "Fixture for auth/validate-expectations.sh's own tests. Deliberately declares expectations the current auth/models/LiturgicalCalendar.json cannot satisfy, one violation per rule category, so a single run exercises and proves every check the validator performs.",
+  "consumer": "TestFixture-Violating",
+  "store": "LiturgicalCalendar",
+  "required_types": ["regional_calendar"],
+  "required_relations": {
+    "wider_region": ["admin", "editor", "viewer", "member_nation", "deleter"]
+  },
+  "forbidden_types": ["national_calendar_test"],
+  "forbidden_relations": {
+    "wider_region": ["viewer"]
+  },
+  "relation_includes": {
+    "wider_region": { "admin": ["editor"] }
+  }
+}
