@@ -8,30 +8,31 @@ expectations schema.
 JSON has no comment syntax, so this note lives beside the registry instead
 of inside it.
 
-**The registry starts empty on purpose.** An empty array is not a stand-in
-for "not yet gotten to" — the validator treats it as a genuine pass (there
-are no declared expectations to contradict) and says so explicitly, rather
-than silently exiting 0. A fabricated entry pointing at a file that does not
-exist would instead make every model-touching PR fail on a fetch error,
-which is worse than not enforcing anything yet.
+**Consumers are added here only once they have actually published an
+expectations file at the URL being registered — not before.** An entry
+pointing at a file that does not yet exist makes every model-touching PR
+fail on a fetch error (exit 2), which is worse than not enforcing that
+consumer yet. The empty registry the validator started with was a genuine
+pass, not a stand-in for "not yet gotten to": with nothing declared there is
+nothing to contradict, and the validator says so explicitly rather than
+silently exiting 0.
 
-Consumers are added here only once they have actually published an
-expectations file at the URL being registered — not before. Currently
-pending:
+Registered:
 
-- **LiturgicalCalendarAPI** — depends on the `LiturgicalCalendar` store.
-  Its expectations file (`authz/openfga-expectations.json` in that repo) is
-  Task 8 of `docs/superpowers/plans/2026-08-04-openfga-1182-upgrade.md`,
-  which is itself blocked on an unmerged PR as of this writing. Once that
-  file exists and is merged to `development`, add:
+- **LiturgicalCalendarAPI** — depends on the `LiturgicalCalendar` store,
+  declaring `authz/openfga-expectations.json` on that repo's `development`
+  branch. Registered once Liturgical-Calendar/LiturgicalCalendarAPI#757
+  merged that file; before then the fetch would have failed. This is Task 8
+  of `docs/superpowers/plans/2026-08-04-openfga-1182-upgrade.md`.
 
-  ```json
-  {
-    "consumer": "LiturgicalCalendarAPI",
-    "store": "LiturgicalCalendar",
-    "expectations_url": "https://raw.githubusercontent.com/Liturgical-Calendar/LiturgicalCalendarAPI/development/authz/openfga-expectations.json"
-  }
-  ```
+  Because the URL tracks `development` rather than a tag or commit, the
+  contract this repo enforces is whatever that branch says *now*. A consumer
+  can therefore tighten its own expectations and turn this repo's CI red
+  without any change landing here — which is the intended direction (the
+  consumer owns its contract), but it does mean a red `validate-models` run
+  on `main` is not necessarily caused by the commit under test.
+
+Pending:
 
 - **Martyrology** (`martyrology-api`) — deliberately absent until that repo
   declares its own expectations file. An empty contract is honest; a
