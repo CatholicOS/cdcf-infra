@@ -671,3 +671,107 @@ Run the suite against the seeded store and show the test executing and passing. 
 - [ ] **Step 4: Commit and open the PR against `development`**
 
 Do not merge. The PR body should state that `cdcf-infra`'s CI reads this file, so changes to it change what that repo is allowed to ship.
+
+---
+
+# Phase 3 — Deployment drift detection (Tasks 9-10)
+
+Independent of Phases 1 and 2; ships as its own PR.
+
+**Why this exists.** On 2026-08-04 the operator upgraded production OpenFGA from `v1.15.1` to `v1.18.2` through the Plesk Docker interface. Plesk does not write back to git, so `auth/docker-compose.prod.yml` still said `v1.15.1` a day later — and this plan's Phases 1 and 2 were written from that stale pin, describing an upgrade of a service that had already been upgraded. Nobody noticed until a container was inspected directly.
+
+Nothing in this repo compares **recorded intent** against **deployed reality**. That is the same gap the model lock files close for authorization models: record what should be deployed, then check that what is deployed matches. This phase generalises it to the rest of the stack.
+
+The check is deliberately **read-only and run on the VPS**. It cannot live in CI, which has no route to the host and should not be given one.
+
+## Global Constraints (Phase 3)
+
+- The script reads. It never restarts a container, pulls an image, edits a file, or calls a write endpoint. A drift checker that repairs drift is a deployment tool wearing a disguise, and it removes the human judgement that is the point of noticing.
+- `jq`, `curl`, `docker` and `bash` only — the same floor the other scripts in `auth/` assume.
+- Drift exits non-zero. There is no warn-only mode, for the same reason the expectations validator has none.
+- The image **tag** alone is not proof: a tag can be re-pointed while a container keeps running an older layer. Where a service reports its own version, that reading wins.
+
+## File Structure (Phase 3)
+
+| File | Responsibility | Change |
+| --- | --- | --- |
+| `auth/verify-deployment.sh` | Compares compose pins and lock files against what is actually running | Created |
+| `docs/SYSADMIN.md` §7 | Day-2 operations — when to run it, and what a failure means | Modified |
+
+---
+
+### Task 9: The drift check
+
+**Files:**
+- Create: `auth/verify-deployment.sh`
+
+**Interfaces:**
+- Produces: `./auth/verify-deployment.sh [--quiet]`, run from `/opt/cdcf-auth/auth` on the VPS. Exits 0 when everything matches, non-zero on the first category of drift found, and prints a table of intended-versus-actual either way. Follows `setup-openfga.sh`'s conventions: `set -euo pipefail`, `log`/`ok`/`warn`/`err` to stderr, documented exit codes.
+
+Two checks, because two things drift for different reasons:
+
+**A. Image pins versus running containers.** For every service in `auth/docker-compose.prod.yml` that pins an image, compare the pin against that container's `.Config.Image`. Then, where the service reports its own build, compare that too — OpenFGA logs `build.version` at startup; Zitadel exposes its version similarly. Report the pin, the container's configured image, and the self-reported version side by side. A mismatch between pin and container is the Plesk case; a mismatch between container image and self-reported version means a re-pointed tag.
+
+**B. Model locks versus live stores.** For each `auth/models/*.lock.json`, read the store's latest authorization model from the OpenFGA API and compare it with the recorded `model_id`. This is the check that was performed by hand in plan A's Task 7; this makes it repeatable.
+
+- [ ] **Step 1: Write the failing case first**
+
+Before the script exists, establish what drift looks like: take a copy of `docker-compose.prod.yml` with one pin altered, and note the exact comparison that must fail. You will use it in Step 4.
+
+- [ ] **Step 2: Implement check A**
+
+Parse the compose file with `docker compose config --format json` rather than grepping YAML — the file uses env interpolation, and a grep-based parser will disagree with what Docker actually resolves. Missing env vars are expected when running outside the deployed directory; handle that explicitly rather than letting it look like drift.
+
+- [ ] **Step 3: Implement check B**
+
+Reuse the lock-file schema from `auth/models/<Store>.lock.json` (`store_name`, `store_id`, `model_id`). A lock whose `store_id` does not exist in the target instance is drift worth reporting, not an error to swallow.
+
+- [ ] **Step 4: Prove it detects drift**
+
+Run against the altered compose copy from Step 1 and show a non-zero exit naming the service, the pin and the running image. Then alter a lock file's `model_id` in a scratch copy and show check B failing the same way. A drift checker that has never failed is indistinguishable from one that cannot.
+
+- [ ] **Step 5: Prove it passes on the real deployment**
+
+Run it read-only on the VPS from `/opt/cdcf-auth/auth`. Expected today: check A clean (compose and containers both `v1.18.2` since PR #28), check B clean (both locks matching, as verified on 2026-08-05). Quote the real output.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add auth/verify-deployment.sh
+git commit -m "Detect drift between recorded intent and what is deployed
+
+The Plesk Docker extension can recreate a container with a different image
+without touching git, which left docker-compose.prod.yml describing a
+version that had not been running for a day. Nothing compared the two.
+This reads both, plus the model lock files against their live stores, and
+fails when they disagree."
+```
+
+---
+
+### Task 10: Wire it into day-2 operations
+
+**Files:**
+- Modify: `docs/SYSADMIN.md` §7
+
+**Interfaces:**
+- Consumes: `auth/verify-deployment.sh` from Task 9.
+
+- [ ] **Step 1: Document when to run it**
+
+Add it to §7 as a day-2 check, with three specific triggers rather than a vague "periodically": before planning any version change (the failure this phase exists to prevent), after any Plesk-side container operation, and as part of the restoration drill in §7.2, where "the stack came back" should mean "came back as recorded".
+
+- [ ] **Step 2: State what a failure means**
+
+Drift is not automatically a problem — the Plesk upgrade was deliberate and correct. What is wrong is the *record*. Say so: on drift, decide which side is right, then either correct the compose file (as PR #28 did) or restore the intended image, and note that the script deliberately will not choose for you.
+
+- [ ] **Step 3: Optional cron, with its trade-off stated**
+
+If it runs on a schedule, its output belongs in the provisioning log alongside the backup job. Note the trade-off honestly: a cron that reports drift nobody reads is worse than no cron, because it converts a loud surprise into a quiet one. Recommend the manual triggers first, and cron only once someone owns the output.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add docs/SYSADMIN.md
+git commit -m "Document the deployment drift check in day-2 operations"
+```
