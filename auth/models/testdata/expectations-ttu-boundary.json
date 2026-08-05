@@ -1,0 +1,8 @@
+{
+  "_comment": "Fixture proving relation_includes does not treat tupleToUserset inheritance as same-object inclusion. Martyrology's edition.can_edit is 'editor from governed_by' (a bare TTU, no union wrapper) — it grants whatever editor is on a DIFFERENT governance_body object, not editor on the edition itself. A consumer asserting relation_includes here is claiming same-object inclusion, which this model does not provide, so this must be reported as a violation rather than pass by matching the computedUserset nested inside the TTU.",
+  "consumer": "TestFixture-TTU-Boundary",
+  "store": "Martyrology",
+  "relation_includes": {
+    "edition": { "can_edit": ["editor"] }
+  }
+}

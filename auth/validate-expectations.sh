@@ -32,10 +32,23 @@
 # relation" (a type like `user`, with no relations block at all, is never a
 # match for a wildcard — there is nothing on it to require, forbid, or check
 # a rewrite of). relation_includes asserts that the named relation's rewrite
-# contains a computedUserset targeting each listed relation, searched
-# anywhere within that relation's own rewrite tree; a type that does not
+# contains a computedUserset targeting each listed relation, on the SAME
+# object — a direct computedUserset, or one reachable only by descending
+# through union/intersection/difference combinators. A type that does not
 # define the named relation at all is skipped for that check (there is
 # nothing to include or fail to include).
+#
+# relation_includes deliberately does NOT descend into tupleToUserset
+# subtrees, even though a tupleToUserset node's own computedUserset also
+# names a relation. "editor from governed_by" (a TTU) and a same-object
+# `union` child naming `editor` are different authorization semantics: the
+# TTU grants whatever `editor` is on a *different* object reached through
+# the tupleset, not `editor` on this object. Matching inside a TTU would let
+# a consumer's "viewer must include editor" pass against a model that only
+# inherits `editor` from elsewhere — a false pass, which for a contract
+# validator is worse than a false failure (a false failure gets looked at; a
+# false pass does not). If a consumer needs to assert TTU-based inheritance,
+# that wants its own rule, not a loosened relation_includes.
 #
 # An empty auth/models/consumers.json is a pass, not a skip: with no
 # consumers registered there is nothing to contradict, so the check is
@@ -146,9 +159,27 @@ def wildcardTypes:
 def typesForKey($k):
   if $k == "*" then wildcardTypes else [$k] end;
 
+# includesRelation walks only same-object combinators (union, intersection,
+# difference) looking for a direct computedUserset on $target. It must NOT
+# descend into tupleToUserset: a TTU's computedUserset names a relation on a
+# *different* object reached via the tupleset, not an inclusion of that
+# relation on this object — see the header comment for why conflating the
+# two is a false pass, not a harmless broadening.
 def includesRelation($rewrite; $target):
-  ([$rewrite | .. | objects | select(has("computedUserset")) | .computedUserset.relation]
-    | index($target)) != null;
+  if ($rewrite | type) != "object" then
+    false
+  elif $rewrite | has("computedUserset") then
+    $rewrite.computedUserset.relation == $target
+  elif $rewrite | has("union") then
+    ($rewrite.union.child // []) | any(includesRelation(.; $target))
+  elif $rewrite | has("intersection") then
+    ($rewrite.intersection.child // []) | any(includesRelation(.; $target))
+  elif $rewrite | has("difference") then
+    includesRelation($rewrite.difference.base; $target)
+      or includesRelation($rewrite.difference.subtract; $target)
+  else
+    false
+  end;
 
 (
   [ ($exp.required_types // [])[] as $t
