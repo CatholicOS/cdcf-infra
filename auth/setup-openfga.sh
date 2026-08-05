@@ -494,8 +494,8 @@ upload_model_if_changed() {
         # EQUAL to the server and silently never uploaded.
         local normalize='walk(if type == "object" then with_entries(select(.value != null and .value != "" and (.value != {} or .key == "this"))) else . end)'
         local server_model file_model
-        server_model=$(echo "$existing_models" | jq -cS ".authorization_models[0].type_definitions | $normalize")
-        file_model=$(jq -cS ".type_definitions | $normalize" "$model_file")
+        server_model=$(echo "$existing_models" | jq -cS ".authorization_models[0] | {schema_version, type_definitions, conditions} | $normalize")
+        file_model=$(jq -cS ". | {schema_version, type_definitions, conditions} | $normalize" "$model_file")
         if [[ "$server_model" == "$file_model" ]]; then
             ok "Model unchanged ($existing_model_id) — no upload needed"
             if [[ "$lock_state" != "foreign" && "$locked_model_id" != "$existing_model_id" ]]; then
@@ -532,7 +532,7 @@ upload_model_if_changed() {
         exit "$EXIT_API"
     fi
     local model_id
-    model_id=$(echo "$result" | jq -r '.authorization_model_id // empty')
+    model_id=$(echo "$result" | jq -r '.authorization_model_id | if type == "string" and length > 0 then . else empty end')
     if [[ -z "$model_id" ]]; then
         err "Failed to upload model: $result"
         exit 5
