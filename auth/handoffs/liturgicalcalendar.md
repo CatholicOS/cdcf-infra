@@ -38,23 +38,9 @@ Everything in this Zitadel section was re-verified against production on 2026-08
 - **Store name**: `LiturgicalCalendar`
 - **Store ID**: `01KRSCF4GVX0X4ZNXXJQEC4XXJ`
 - **Authorization model ID**: `01KW4FW2ZCT1E693PY8D9TJEFM` — the latest model in the store, uploaded 2026-06-27T12:11Z. Supersedes `01KW40P7AM87W4Y864D2RZDR0B` (same day, 07:46Z) and `01KRSCF4K9W2EWZ1X2PP1QVH3B` (the original 2026-05-16 upload this handoff used to record).
-- **Model source**: **`LiturgicalCalendarAPI/scripts/openfga-model.json` — that repo, not this one.** Schema 1.1. Deployed types: `user`, `wider_region`, `national_calendar`, `diocesan_calendar`, `general_roman_calendar`, `national_calendar_test`, `diocesan_calendar_test`, `general_roman_calendar_test`; relations are `admin`/`editor`/`viewer` throughout, plus `member_nation` on `wider_region`. Verified against the live store on 2026-08-04.
+- **Model source**: `cdcf-infra/auth/models/LiturgicalCalendar.json` — this repo owns it as of 2026-08-04; the copy in `LiturgicalCalendarAPI` was removed. Schema 1.1. Deployed types: `user`, `wider_region`, `national_calendar`, `diocesan_calendar`, `general_roman_calendar`, `national_calendar_test`, `diocesan_calendar_test`, `general_roman_calendar_test`; relations `admin`/`editor`/`viewer` throughout, plus `member_nation` on `wider_region`. The current model ID is recorded in `auth/models/LiturgicalCalendar.lock.json`.
 
-  Both `test_definition` and the `deleter` relation are **gone** — dropped by the LitCal team in `ea6fdd6c` ("drop test_definition type") and `76033bfb` ("admin-superset model … drop deleter"), with the calendar-scoped test types added in `2060b19a`. Any consumer still checking `deleter` or `test_definition` is checking against a relation that no longer exists **in the current/latest model** — consumers pinned to an earlier model ID (e.g. `01KRSCF4K9W2EWZ1X2PP1QVH3B`) still see it, since a pin names a specific model ID.
-
-### ⚠ The copy in this repo is stale — do not re-run `--create-litcal-store`
-
-`cdcf-infra/auth/models/LiturgicalCalendar.json` has not been touched since 2026-05-16 (`dd343e5`), so it still describes the original model. The LitCal team has since evolved the model twice in their own repo and uploaded it directly to the shared store.
-
-`upload_model_if_changed` in `setup-openfga.sh` compares the store's **latest** model against that file and uploads a new version when they differ. They differ. So running:
-
-```bash
-./setup-openfga.sh --target production --create-litcal-store   # ⚠ NOT safe right now
-```
-
-would push the May model back on top as the new latest — silently reverting `general_roman_calendar`, the three `*_test` types and `member_nation`, and resurrecting `test_definition`/`deleter`. Existing pinned consumers would be unaffected (a pin names a specific model ID), but anything resolving "latest" would regress.
-
-Until `auth/models/LiturgicalCalendar.json` is re-synced from `LiturgicalCalendarAPI/scripts/openfga-model.json`, treat the LitCal store's model as **owned by the LitCal repo** and leave it alone from here. Store creation and tuple seeding are unaffected; it is only the model upload that is unsafe.
+  Both `test_definition` and the `deleter` relation are **gone** — dropped by the LitCal team in `ea6fdd6c` ("drop test_definition type") and `76033bfb` ("admin-superset model … drop deleter"), with the calendar-scoped test types added in `2060b19a`. Both are gone from the current (latest) model only; a consumer still pinned to an earlier model ID (e.g. `01KRSCF4K9W2EWZ1X2PP1QVH3B`) still sees them, since a pin names a specific model ID and that model still exists in the store's history.
 
 ## Out-of-band (delivered separately, not in this repo)
 

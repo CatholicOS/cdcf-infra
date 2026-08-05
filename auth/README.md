@@ -31,6 +31,29 @@ Plesk's Docker extension picks up `docker-compose.prod.yml` at the path above vi
 - **Host Postgres only** — no containerized DBs. One Postgres instance to back up, patch, monitor.
 - Phase 1 consumers: LiturgicalCalendarAPI + CDCF Website (`cdcf-website` issue [#2](https://github.com/CatholicOS/cdcf-website/issues/2) — team-member bio self-edit). BibleGet and OntoKit Orgs remain pre-provisioned stubs.
 - See the open-question Discussion: <https://github.com/CatholicOS/cdcf-website/discussions/98>.
+- **cdcf-infra owns every OpenFGA authorization model** on the shared instance —
+  `auth/models/<Store>.json`, its optional `<Store>.tuples.json`, and the
+  `--create-{project}-store` shorthand. Consumer repos keep no model file; their
+  local stacks obtain the model by cloning this repo and running
+  `setup-openfga.sh --target local` (see `martyrology-api`'s `authz-seed`
+  service for the reference implementation). `auth/models/<Store>.lock.json`
+  records the model ID this repo last uploaded to that store; the script only
+  ever reads it — it never writes the file itself, since on the VPS the
+  provisioner runs as `ubuntu` while `auth/models/` is owned by the sync user,
+  and because writing a tracked file there would dirty the checkout that CI
+  pulls with `--ff-only`. When a store's latest model doesn't match its lock,
+  the provisioner refuses (exit 7) and prints the lock JSON on stderr for a
+  human to commit via PR, rather than uploading over an out-of-band change —
+  `--force-model-upload` overrides when replacing the deployed model is the
+  actual intent — and note the check runs before the file-vs-store comparison,
+  so a stale lock refuses even when the model file matches what is deployed.
+  The guard only applies when the lock's `store_id` matches the store being
+  provisioned: a lock committed for one environment (e.g. production) is
+  bypassed entirely on another (e.g. a local dev stack's own store), which
+  there behaves as plain compare-and-upload. With no lock file at all, an
+  identical file adopts the lock and a differing file refuses. A failed
+  OpenFGA request aborts the run (exit 9) — it is never read as "store absent"
+  or "no model yet".
 
 ## Prerequisites
 

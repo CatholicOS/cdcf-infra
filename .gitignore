@@ -20,3 +20,9 @@ __pycache__/
 
 # Serena MCP per-developer IDE state — not shared, not infrastructure
 .serena/
+
+# agent scratch: worktrees and subagent-driven-development ledgers.
+# Only .claude/worktrees/ — the rest of .claude/ (settings, commands, agents)
+# is conventionally shared project config and stays tracked.
+.claude/worktrees/
+.superpowers/
