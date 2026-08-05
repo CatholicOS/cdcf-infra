@@ -41,17 +41,33 @@
 # contract that holds. Schema rejection is reported and exits distinctly from
 # a violation (see the exit codes below).
 #
-# "*" AS A TYPE KEY in required_relations / forbidden_relations /
-# relation_includes resolves to the types the consumer listed in
-# required_types when that key is present, and to every type in the model
-# when it is not. A type in scope that has NO relations block yields a
-# violation for each relation required of it — it is emphatically not
-# skipped. That is what keeps a bare type like `user` out of scope for a
-# consumer that never declared it, while making the deletion of an entire
-# relations block fail loudly. (An earlier version resolved "*" to "types
-# that have a relations block", which meant deleting one relation failed but
-# deleting the whole block passed — the more destructive edit was the one
-# that slipped through.)
+# "*" AS A TYPE KEY RESOLVES ASYMMETRICALLY, and the asymmetry is load-
+# bearing — do not "simplify" the two call sites back into one:
+#
+#   - A REQUIREMENT (required_relations, relation_includes) is a claim about
+#     the consumer's own declared surface — "the types I use must have these
+#     relations" — so "*" is the types listed in required_types when the
+#     consumer declared them, and every type in the model when they did not.
+#   - A PROHIBITION (forbidden_relations) is a claim about the whole model —
+#     "no type anywhere defines deleter" — so "*" is every type in the model,
+#     unconditionally, whether or not required_types is present. Narrowing a
+#     prohibition to the declared surface would let a type the consumer never
+#     listed carry the forbidden relation and still report as satisfied,
+#     which is the false-pass direction; a prohibition can only ever be
+#     weakened by shrinking its scope.
+#
+# (forbidden_types is a plain list of type names, not a wildcard rule, and
+# needs no scope of its own.)
+#
+# In either scope, a type that has NO relations block yields a violation for
+# each relation required of it — it is emphatically not skipped. That is what
+# keeps a bare type like `user` out of a requirement's scope for a consumer
+# that never declared it, while making the deletion of an entire relations
+# block fail loudly. (An earlier version resolved "*" to "types that have a
+# relations block", which meant deleting one relation failed but deleting the
+# whole block passed — the more destructive edit was the one that slipped
+# through. The fix for that was then applied to prohibitions too, which
+# produced the mirror-image false pass described above; hence the split.)
 #
 # relation_includes asserts a SUFFICIENT path: holding the target relation,
 # on its own, is enough to hold the named relation. That is LitCal's real
@@ -273,17 +289,32 @@ def relsOf($t):
 def modelTypes:
   [$model.type_definitions[]?.type];
 
-# "*" is the consumer's own declared surface when they declared one, and the
-# whole model otherwise. It is deliberately NOT "types that happen to have a
-# relations block": that made a type whose relations were deleted wholesale
+# "*" resolves DIFFERENTLY for a requirement than for a prohibition, and the
+# two must not be folded back together (see the file header). A requirement
+# — required_relations, relation_includes — is a claim about the consumer's
+# own declared surface, so "*" is required_types when the consumer declared
+# one and the whole model otherwise. A prohibition — forbidden_relations —
+# is a claim about the whole model ("nothing anywhere defines deleter"), so
+# "*" is every type, unconditionally: narrowing a prohibition to the
+# declared surface lets a brand-new type carry the forbidden relation and
+# still pass, which is the false-pass direction.
+#
+# Neither is "types that happen to have a relations block", which is what
+# both used to be: that made a type whose relations were deleted wholesale
 # drop silently out of scope, so the destructive edit passed while a smaller
 # one failed. A relation-less type in scope now reaches relsOf's {} default
 # and fails every relation required of it, which is the point.
-def wildcardTypes:
+def requirementScope:
   if ($exp | has("required_types")) then ($exp.required_types // []) else modelTypes end;
 
-def typesForKey($k):
-  if $k == "*" then wildcardTypes else [$k] end;
+def prohibitionScope:
+  modelTypes;
+
+def typesForRequirement($k):
+  if $k == "*" then requirementScope else [$k] end;
+
+def typesForProhibition($k):
+  if $k == "*" then prohibitionScope else [$k] end;
 
 # includesRelation asserts a SUFFICIENT path: holding $target, on its own,
 # is enough to hold the relation described by $rewrite. Every branch below
@@ -338,7 +369,7 @@ def includesRelation($rewrite; $target):
 |
 (
   [ ($exp.required_relations // {}) | keys[] as $k
-    | typesForKey($k)[] as $t
+    | typesForRequirement($k)[] as $t
     | ($exp.required_relations[$k][]) as $rel
     | select((relsOf($t) | has($rel)) | not)
     | "required_relations: type \"" + $t + "\" missing required relation \"" + $rel + "\""
@@ -347,7 +378,7 @@ def includesRelation($rewrite; $target):
 |
 (
   [ ($exp.forbidden_relations // {}) | keys[] as $k
-    | typesForKey($k)[] as $t
+    | typesForProhibition($k)[] as $t
     | ($exp.forbidden_relations[$k][]) as $rel
     | select(relsOf($t) | has($rel))
     | "forbidden_relations: type \"" + $t + "\" has forbidden relation \"" + $rel + "\""
@@ -362,7 +393,7 @@ def includesRelation($rewrite; $target):
 (
   [ ($exp.relation_includes // {}) | keys[] as $k
     | ($exp.relation_includes[$k] | keys[]) as $namedRel
-    | ([typesForKey($k)[] | select(relsOf(.) | has($namedRel))]) as $defining
+    | ([typesForRequirement($k)[] | select(relsOf(.) | has($namedRel))]) as $defining
     | if ($defining | length) == 0 then
         ( if $k == "*" then
             "relation_includes: no type in scope defines relation \"" + $namedRel

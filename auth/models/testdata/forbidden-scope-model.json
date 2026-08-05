@@ -1,0 +1,37 @@
+{
+  "_comment": "Standalone test-only model for auth/validate-expectations.sh's own fixtures — not a real store. `secret_thing` is deliberately NOT in the paired expectations file's required_types, and it carries the forbidden `deleter`; a prohibition is a claim about the whole model, so it must be caught there anyway. `secret_thing.editor` is a bare `this` that does NOT include admin, so if relation_includes were ever widened to the whole model too it would produce a second violation — which is what pins the requirement half of the split.",
+  "schema_version": "1.1",
+  "type_definitions": [
+    { "type": "user" },
+    {
+      "type": "doc",
+      "relations": {
+        "admin":  { "this": {} },
+        "editor": { "union": { "child": [ { "this": {} }, { "computedUserset": { "relation": "admin" } } ] } },
+        "viewer": { "union": { "child": [ { "this": {} }, { "computedUserset": { "relation": "editor" } } ] } }
+      },
+      "metadata": {
+        "relations": {
+          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
+          "editor": { "directly_related_user_types": [{ "type": "user" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "secret_thing",
+      "relations": {
+        "admin":   { "this": {} },
+        "editor":  { "this": {} },
+        "deleter": { "this": {} }
+      },
+      "metadata": {
+        "relations": {
+          "admin":   { "directly_related_user_types": [{ "type": "user" }] },
+          "editor":  { "directly_related_user_types": [{ "type": "user" }] },
+          "deleter": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    }
+  ]
+}

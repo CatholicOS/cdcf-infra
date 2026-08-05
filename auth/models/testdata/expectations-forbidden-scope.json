@@ -1,0 +1,9 @@
+{
+  "_comment": "Pins the asymmetry between a requirement's scope and a prohibition's scope. forbidden_relations is a claim about the WHOLE model — 'nothing anywhere defines deleter' — so \"*\" must reach `secret_thing` even though this consumer never declared it in required_types; scoping the prohibition to the declared surface silently weakened it into a false pass. relation_includes, a requirement, keeps scoping to required_types: `secret_thing.editor` does not include admin, so widening the requirement half too would add a SECOND violation here. Exactly one violation is therefore the assertion, not just a nonzero count.",
+  "consumer": "TestFixture-Forbidden-Scope",
+  "store": "forbidden-scope-model",
+  "required_types": ["user", "doc"],
+  "required_relations": { "doc": ["admin", "editor", "viewer"] },
+  "forbidden_relations": { "*": ["deleter"] },
+  "relation_includes": { "*": { "editor": ["admin"] } }
+}

@@ -109,6 +109,24 @@ expect 0 "No violations" \
     --expectations-file "$TD/expectations-wildcard-scope-pass.json" \
     --model-file "$TD/wildcard-scope-model.json"
 
+# Both halves of the requirement/prohibition split are pinned here, and they
+# are pinned against the SAME fixture on purpose: a uniform "*" — whichever
+# way it is unified — breaks exactly one of these two cases. Scope both to
+# required_types and the first fails (secret_thing is never reached); scope
+# both to the whole model and the second fails (secret_thing.editor adds a
+# second violation). Neither can be made to pass by weakening the other.
+echo "${B}[selftest]${N} --- \"*\" is a requirement's scope, not a prohibition's ---"
+
+expect 1 'forbidden_relations: type "secret_thing" has forbidden relation "deleter"' \
+    "prohibition: \"*\" is the whole model, reaching a type outside required_types" -- \
+    --expectations-file "$TD/expectations-forbidden-scope.json" \
+    --model-file "$TD/forbidden-scope-model.json"
+
+expect 1 "1 violation(s) found" \
+    "requirement: \"*\" stays scoped to required_types — exactly one violation, not two" -- \
+    --expectations-file "$TD/expectations-forbidden-scope.json" \
+    --model-file "$TD/forbidden-scope-model.json"
+
 echo "${B}[selftest]${N} --- expectations schema, distinct from a violation ---"
 
 expect 64 "not valid JSON (or is empty)" \
