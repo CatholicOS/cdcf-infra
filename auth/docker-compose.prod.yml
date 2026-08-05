@@ -152,7 +152,7 @@ services:
 
   # --- OpenFGA (relationship authz) -----------------------------------
   openfga-migrate:
-    image: openfga/openfga:v1.15.1
+    image: openfga/openfga:v1.18.2
     <<: *host-gateway
     command: migrate
     environment:
@@ -161,7 +161,7 @@ services:
     restart: 'no'
 
   openfga:
-    image: openfga/openfga:v1.15.1
+    image: openfga/openfga:v1.18.2
     restart: unless-stopped
     <<: *host-gateway
     depends_on:

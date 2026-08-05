@@ -54,8 +54,8 @@ Discussion: <https://github.com/CatholicOS/cdcf-website/discussions/98>. Summary
 | Zitadel backend | `ghcr.io/zitadel/zitadel:v4.15.0` | `auth/docker-compose.prod.yml` |
 | Zitadel v2 login UI | `ghcr.io/zitadel/zitadel-login:v4.15.0` | same |
 | Internal nginx proxy | `nginx:alpine` (config in `auth/nginx/zitadel.conf`) | same |
-| OpenFGA | `openfga/openfga:v1.15.1` | same |
-| OpenFGA migrate (one-shot) | `openfga/openfga:v1.15.1` | same |
+| OpenFGA | `openfga/openfga:v1.18.2` | same |
+| OpenFGA migrate (one-shot) | `openfga/openfga:v1.18.2` | same |
 | Authz model (LitCal) | `auth/models/LiturgicalCalendar.json` + `.lock.json` | owned here; synced from `LiturgicalCalendarAPI/scripts/openfga-model.json` on 2026-08-04 when ownership was centralized |
 | Authz model (Martyrology) | `auth/models/Martyrology.json` + `auth/models/Martyrology.tuples.json` | this repo — the `.tuples.json` carries the structural `edition → governed_by → governance_body` wiring seeded at store creation |
 | Setup script — Zitadel | `auth/setup-zitadel.sh` | this repo |
