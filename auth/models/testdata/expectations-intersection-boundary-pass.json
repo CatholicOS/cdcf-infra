@@ -1,0 +1,8 @@
+{
+  "_comment": "Companion to expectations-intersection-boundary-fail.json, proving all(...) is not simply refusing every intersection. resource.admin_gated = admin AND admin: the target appears in EVERY branch, so holding admin alone IS sufficient — this must pass.",
+  "consumer": "TestFixture-Intersection-Boundary-Pass",
+  "store": "testdata/intersection-boundary-model",
+  "relation_includes": {
+    "resource": { "admin_gated": ["admin"] }
+  }
+}

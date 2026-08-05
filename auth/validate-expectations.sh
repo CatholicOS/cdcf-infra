@@ -31,36 +31,33 @@
 # relation_includes means "every type in the model that defines at least one
 # relation" (a type like `user`, with no relations block at all, is never a
 # match for a wildcard — there is nothing on it to require, forbid, or check
-# a rewrite of). relation_includes asserts that the named relation's rewrite
-# contains a computedUserset targeting each listed relation, on the SAME
-# object — a direct computedUserset, or one reachable only by descending
-# through union/intersection/difference combinators. A type that does not
-# define the named relation at all is skipped for that check (there is
-# nothing to include or fail to include).
+# a rewrite of). relation_includes asserts a SUFFICIENT path: holding the
+# target relation, on its own, is enough to hold the named relation. That is
+# LitCal's real invariant — an admin can edit and view, because editor and
+# viewer are unions including admin — and it is a sufficiency claim, not a
+# necessity one. A type that does not define the named relation at all is
+# skipped for that check (there is nothing to include or fail to include).
 #
-# relation_includes has two deliberate boundaries, both there to avoid
-# false passes — for a contract validator, wrongly reporting a contract as
-# satisfied is worse than wrongly reporting a violation (a false failure
-# gets looked at; a false pass does not):
+# That one rule is what the rewrite walk (see includesRelation's own comment
+# for the full derivation) is built around, and it is also why the walk
+# deliberately does NOT treat two constructs as inclusion — for a contract
+# validator, wrongly reporting a contract as satisfied is worse than wrongly
+# reporting a violation (a false failure gets looked at; a false pass does
+# not):
 #
-#   - It does NOT descend into tupleToUserset subtrees, even though a
-#     tupleToUserset node's own computedUserset also names a relation.
-#     "editor from governed_by" (a TTU) and a same-object `union` child
-#     naming `editor` are different authorization semantics: the TTU grants
-#     whatever `editor` is on a *different* object reached through the
-#     tupleset, not `editor` on this object. Matching inside a TTU would let
-#     a consumer's "viewer must include editor" pass against a model that
-#     only inherits `editor` from elsewhere. If a consumer needs to assert
-#     TTU-based inheritance, that wants its own rule, not a loosened
-#     relation_includes.
-#   - Within a `difference` rewrite ("base, but not subtract"), a target
-#     relation reachable only through the `subtract` side is being
-#     explicitly EXCLUDED, not included — so `difference` only counts as
-#     including a target when it is reachable through `base` AND NOT
-#     reachable through `subtract`. Reporting inclusion because the target
-#     merely appears somewhere in the rewrite (in either branch) would let a
-#     consumer's "viewer must include admin" pass against a model that
-#     deliberately subtracts `admin` from `viewer`.
+#   - tupleToUserset is never descended into. "editor from governed_by" (a
+#     TTU) grants whatever `editor` is on a *different* object reached
+#     through the tupleset — holding `editor` there says nothing about
+#     holding it on this object, so it is not a sufficient path here at all,
+#     same-object or otherwise. If a consumer needs to assert TTU-based
+#     inheritance, that wants its own rule, not a loosened relation_includes.
+#   - Within `intersection` (R = A ∩ B, both required), the target must
+#     appear in EVERY child, not just one: appearing in only A is a
+#     necessary-but-not-sufficient condition for R, and reporting that as
+#     inclusion is the same false-pass shape as the TTU case, one level
+#     down. Within `difference` ("base, but not subtract"), a target
+#     reachable only through `subtract` is being excluded, never a
+#     sufficient path — inclusion requires `base` AND NOT `subtract`.
 #
 # An empty auth/models/consumers.json is a pass, not a skip: with no
 # consumers registered there is nothing to contradict, so the check is
@@ -171,18 +168,27 @@ def wildcardTypes:
 def typesForKey($k):
   if $k == "*" then wildcardTypes else [$k] end;
 
-# includesRelation walks only same-object combinators (union, intersection,
-# difference) looking for a direct computedUserset on $target. Two things
-# are deliberately NOT treated as inclusion, both because they would be
-# false passes rather than harmless broadenings — see the header comment:
-#   - tupleToUserset: its computedUserset names a relation on a *different*
-#     object reached via the tupleset, not this object, so it is never
-#     descended into.
-#   - the `subtract` side of a difference: "base but not subtract" means a
-#     target reachable only through `subtract` is being explicitly EXCLUDED,
-#     not included, so a difference only counts as including $target when
-#     $target is reachable through `base` AND NOT reachable through
-#     `subtract`.
+# includesRelation asserts a SUFFICIENT path: holding $target, on its own,
+# is enough to hold the relation described by $rewrite. Every branch below
+# follows from that one rule:
+#   - computedUserset: holding $target is literally what this node grants —
+#     sufficient by definition.
+#   - union: holding $target satisfies the union if it satisfies ANY one
+#     child, since a union needs only one satisfied child — any(...).
+#   - intersection: a relation R = A ∩ B needs BOTH A and B satisfied.
+#     Holding $target only satisfies branches where $target itself appears;
+#     if it's missing from even one branch, holding $target alone is not
+#     sufficient for R. So intersection requires $target in EVERY child —
+#     all(...) — not any(...); "any" here would report a merely necessary
+#     branch as sufficient, the same false-pass shape as the two cases below.
+#   - difference (base, but not subtract): $target reachable through
+#     `subtract` is being explicitly EXCLUDED, never a sufficient path, so
+#     inclusion requires $target reachable through `base` AND NOT reachable
+#     through `subtract`.
+#   - tupleToUserset: its computedUserset names $target on a *different*
+#     object reached via the tupleset, not this object — holding $target
+#     there says nothing about holding it here, so this is never descended
+#     into at all; not "insufficient", simply not about the same object.
 def includesRelation($rewrite; $target):
   if ($rewrite | type) != "object" then
     false
@@ -191,7 +197,7 @@ def includesRelation($rewrite; $target):
   elif $rewrite | has("union") then
     ($rewrite.union.child // []) | any(includesRelation(.; $target))
   elif $rewrite | has("intersection") then
-    ($rewrite.intersection.child // []) | any(includesRelation(.; $target))
+    ($rewrite.intersection.child // []) | all(includesRelation(.; $target))
   elif $rewrite | has("difference") then
     includesRelation($rewrite.difference.base; $target)
       and (includesRelation($rewrite.difference.subtract; $target) | not)
