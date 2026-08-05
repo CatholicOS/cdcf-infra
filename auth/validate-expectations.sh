@@ -97,6 +97,16 @@
 #     down. Within `difference` ("base, but not subtract"), a target
 #     reachable only through `subtract` is being excluded, never a
 #     sufficient path — inclusion requires `base` AND NOT `subtract`.
+#   - computedUserset is compared by name only, one hop: it does not follow
+#     the NAMED relation's own rewrite in turn. So a model where `viewer`
+#     includes `editor` and `editor` (separately) includes `admin` will
+#     report `viewer` as NOT including `admin` — a false VIOLATION, the
+#     opposite failure mode from the two exclusions above, and one this
+#     script's stated bias tolerates on purpose: it is noisy and gets
+#     investigated, never silent. Making the walk transitive would need
+#     cycle detection, and a rewrite graph can cycle; a mishandled cycle
+#     risks the false-PASS shape this script exists to avoid, which is worse
+#     than the false violation it would fix. Left alone deliberately.
 #
 # An empty auth/models/consumers.json is a pass, not a skip: with no
 # consumers registered there is nothing to contradict, so the check is
@@ -305,7 +315,12 @@ def modelTypes:
 # one failed. A relation-less type in scope now reaches relsOf's {} default
 # and fails every relation required of it, which is the point.
 def requirementScope:
-  if ($exp | has("required_types")) then ($exp.required_types // []) else modelTypes end;
+  # An empty required_types ([]) is treated the same as an absent key, not as
+  # a deliberately empty scope: a consumer that writes "required_types": []
+  # is declaring no surface, not zero surface, and falling back to the whole
+  # model is the safe direction — the alternative silences a wildcard
+  # required_relations/relation_includes rule instead of evaluating it.
+  ($exp.required_types // []) as $rt | if ($rt | length) > 0 then $rt else modelTypes end;
 
 def prohibitionScope:
   modelTypes;
@@ -573,6 +588,17 @@ for i in $(seq 0 $((NUM_CONSUMERS - 1))); do
         exit "$EXIT_MODEL_MISSING"
     fi
 
+    # expectations_url is consumer-supplied data (it comes from the registry
+    # file, not a literal in this script), so it gets the same "could not
+    # verify" treatment as any other fetch failure rather than a fetch
+    # attempt: a plain-http URL, or an https URL that redirects to http,
+    # would otherwise send this script's requests in the clear.
+    if [[ "$URL" != https://* ]]; then
+        err "[$CONSUMER/$STORE] expectations_url is not https://, refusing to fetch: $URL"
+        FETCH_FAILURES=$((FETCH_FAILURES + 1))
+        continue
+    fi
+
     log "Fetching expectations for $CONSUMER ($STORE) from $URL"
 
     TMP_EXP=$(mktemp)
@@ -581,8 +607,15 @@ for i in $(seq 0 $((NUM_CONSUMERS - 1))); do
     # -L: a consumer reorganizing their repo and leaving a 301 behind should
     # not read as a permanently unverifiable contract. These are public raw
     # URLs with no credentials attached, so following redirects costs
-    # nothing; --max-redirs bounds a redirect loop.
-    HTTP_STATUS=$(curl -sS -L --max-redirs 5 -o "$TMP_EXP" -w '%{http_code}' \
+    # nothing; --max-redirs bounds a redirect loop. --proto/--proto-redir
+    # pin both the initial request and any redirect hop to https, backstopping
+    # the scheme check above against an https URL that redirects to http.
+    # --max-filesize bounds the response body: a real expectations file is a
+    # few consumer-declared type/relation names, well under a kilobyte; 1 MiB
+    # is generous headroom for that while still refusing an unbounded or
+    # maliciously large body instead of downloading it until --max-time.
+    HTTP_STATUS=$(curl -sS -L --max-redirs 5 --proto '=https' --proto-redir '=https' \
+        --max-filesize 1048576 -o "$TMP_EXP" -w '%{http_code}' \
         --connect-timeout 10 --max-time 30 "$URL" 2>"$TMP_ERR") || {
         err "[$CONSUMER/$STORE] could not fetch expectations (transport error): $URL"
         [[ -s "$TMP_ERR" ]] && err "  $(cat "$TMP_ERR")"
@@ -621,7 +654,7 @@ for i in $(seq 0 $((NUM_CONSUMERS - 1))); do
 done
 
 if [[ "$TOTAL_VIOLATIONS" -gt 0 && "$FETCH_FAILURES" -gt 0 ]]; then
-    err "$TOTAL_VIOLATIONS expectations violation(s) violated, and $FETCH_FAILURES consumer(s)' expectations could not be verified. An unverified contract is not a satisfied one."
+    err "$TOTAL_VIOLATIONS expectations violation(s) found, and $FETCH_FAILURES consumer(s)' expectations could not be verified. An unverified contract is not a satisfied one."
     exit "$EXIT_VIOLATION"
 elif [[ "$TOTAL_VIOLATIONS" -gt 0 ]]; then
     err "$TOTAL_VIOLATIONS expectations violation(s) found."

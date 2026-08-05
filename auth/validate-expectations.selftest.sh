@@ -97,6 +97,10 @@ expect 1 'no type in scope defines relation "nonexistent_rel"' \
     "named relation absent model-wide is a violation, not a vacuous pass" -- \
     --expectations-file "$TD/expectations-missing-named-relation.json" --store LiturgicalCalendar
 
+expect 1 'type "wider_region" does not define relation "nonexistent_rel_2"' \
+    "named relation absent on an explicitly-named type is a violation too, not skipped" -- \
+    --expectations-file "$TD/expectations-missing-named-relation.json" --store LiturgicalCalendar
+
 echo "${B}[selftest]${N} --- \"*\" wildcard scope ---"
 
 expect 1 'type "national_calendar" missing required relation "admin"' \
@@ -107,6 +111,11 @@ expect 1 'type "national_calendar" missing required relation "admin"' \
 expect 0 "No violations" \
     "wildcard scope: undeclared bare types stay out of scope, still passes" -- \
     --expectations-file "$TD/expectations-wildcard-scope-pass.json" \
+    --model-file "$TD/wildcard-scope-model.json"
+
+expect 1 "2 violation(s) found" \
+    "empty required_types falls back to the whole model, not a vacuous scope" -- \
+    --expectations-file "$TD/expectations-empty-required-types.json" \
     --model-file "$TD/wildcard-scope-model.json"
 
 # Both halves of the requirement/prohibition split are pinned here, and they
