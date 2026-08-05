@@ -95,15 +95,30 @@ Expected (if unchanged): a startup error mentioning that the playground only sup
 - [x] **Step 5: Confirm the migrate command no-ops against an up-to-date schema**
 
 ```bash
+set -euo pipefail
 docker network create fga-upgrade-test 2>/dev/null || true
 docker run --rm -d --name fga-pg-db --network fga-upgrade-test \
   -e POSTGRES_PASSWORD=pw -e POSTGRES_USER=openfga -e POSTGRES_DB=openfga postgres:16
-sleep 8
+for i in $(seq 1 30); do
+  docker exec fga-pg-db pg_isready -U openfga -d openfga -h localhost && break
+  if [ "$i" -eq 30 ]; then
+    echo "fga-pg-db never became ready" >&2
+    exit 1
+  fi
+  sleep 1
+done
 docker run --rm --network fga-upgrade-test openfga/openfga:v1.15.1 migrate \
   --datastore-engine postgres --datastore-uri 'postgres://openfga:pw@fga-pg-db:5432/openfga?sslmode=disable'
 docker run --rm --network fga-upgrade-test openfga/openfga:v1.18.2 migrate \
   --datastore-engine postgres --datastore-uri 'postgres://openfga:pw@fga-pg-db:5432/openfga?sslmode=disable'
 ```
+
+`set -euo pipefail` makes the block abort on the first failing command, so a
+failed v1.15.1 migrate can no longer be masked by a v1.18.2 migrate that
+"succeeds" by migrating an untouched database from scratch. The loop polls
+`pg_isready` against the `openfga` role/database (bounded to 30 attempts)
+instead of a fixed `sleep`, so the migrate commands only run once Postgres is
+actually accepting connections.
 
 Expected: the second run reports the database is already at the target version and applies nothing. This is the empirical confirmation of the "migration-free" claim that the rest of the plan rests on.
 
