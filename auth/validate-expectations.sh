@@ -38,17 +38,29 @@
 # define the named relation at all is skipped for that check (there is
 # nothing to include or fail to include).
 #
-# relation_includes deliberately does NOT descend into tupleToUserset
-# subtrees, even though a tupleToUserset node's own computedUserset also
-# names a relation. "editor from governed_by" (a TTU) and a same-object
-# `union` child naming `editor` are different authorization semantics: the
-# TTU grants whatever `editor` is on a *different* object reached through
-# the tupleset, not `editor` on this object. Matching inside a TTU would let
-# a consumer's "viewer must include editor" pass against a model that only
-# inherits `editor` from elsewhere — a false pass, which for a contract
-# validator is worse than a false failure (a false failure gets looked at; a
-# false pass does not). If a consumer needs to assert TTU-based inheritance,
-# that wants its own rule, not a loosened relation_includes.
+# relation_includes has two deliberate boundaries, both there to avoid
+# false passes — for a contract validator, wrongly reporting a contract as
+# satisfied is worse than wrongly reporting a violation (a false failure
+# gets looked at; a false pass does not):
+#
+#   - It does NOT descend into tupleToUserset subtrees, even though a
+#     tupleToUserset node's own computedUserset also names a relation.
+#     "editor from governed_by" (a TTU) and a same-object `union` child
+#     naming `editor` are different authorization semantics: the TTU grants
+#     whatever `editor` is on a *different* object reached through the
+#     tupleset, not `editor` on this object. Matching inside a TTU would let
+#     a consumer's "viewer must include editor" pass against a model that
+#     only inherits `editor` from elsewhere. If a consumer needs to assert
+#     TTU-based inheritance, that wants its own rule, not a loosened
+#     relation_includes.
+#   - Within a `difference` rewrite ("base, but not subtract"), a target
+#     relation reachable only through the `subtract` side is being
+#     explicitly EXCLUDED, not included — so `difference` only counts as
+#     including a target when it is reachable through `base` AND NOT
+#     reachable through `subtract`. Reporting inclusion because the target
+#     merely appears somewhere in the rewrite (in either branch) would let a
+#     consumer's "viewer must include admin" pass against a model that
+#     deliberately subtracts `admin` from `viewer`.
 #
 # An empty auth/models/consumers.json is a pass, not a skip: with no
 # consumers registered there is nothing to contradict, so the check is
@@ -160,11 +172,17 @@ def typesForKey($k):
   if $k == "*" then wildcardTypes else [$k] end;
 
 # includesRelation walks only same-object combinators (union, intersection,
-# difference) looking for a direct computedUserset on $target. It must NOT
-# descend into tupleToUserset: a TTU's computedUserset names a relation on a
-# *different* object reached via the tupleset, not an inclusion of that
-# relation on this object — see the header comment for why conflating the
-# two is a false pass, not a harmless broadening.
+# difference) looking for a direct computedUserset on $target. Two things
+# are deliberately NOT treated as inclusion, both because they would be
+# false passes rather than harmless broadenings — see the header comment:
+#   - tupleToUserset: its computedUserset names a relation on a *different*
+#     object reached via the tupleset, not this object, so it is never
+#     descended into.
+#   - the `subtract` side of a difference: "base but not subtract" means a
+#     target reachable only through `subtract` is being explicitly EXCLUDED,
+#     not included, so a difference only counts as including $target when
+#     $target is reachable through `base` AND NOT reachable through
+#     `subtract`.
 def includesRelation($rewrite; $target):
   if ($rewrite | type) != "object" then
     false
@@ -176,7 +194,7 @@ def includesRelation($rewrite; $target):
     ($rewrite.intersection.child // []) | any(includesRelation(.; $target))
   elif $rewrite | has("difference") then
     includesRelation($rewrite.difference.base; $target)
-      or includesRelation($rewrite.difference.subtract; $target)
+      and (includesRelation($rewrite.difference.subtract; $target) | not)
   else
     false
   end;
