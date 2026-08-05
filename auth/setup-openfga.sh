@@ -35,9 +35,11 @@
 # that are absent from the file are reported as drift and left alone.
 #
 # Exit codes: 1 env/config, 3 store, 4 model file missing, 5 model upload
-#   response carried no model ID, 6 tuples file, 7 lock guard refused, 8
-#   duplicate store names, 9 the OpenFGA API failed (transport error or
-#   non-2xx) — never a verdict about state, 64 usage.
+#   response carried no model ID, 6 tuples file, 7 the model-lock guard
+#   refused to overwrite a deployed model (upload_model_if_changed only — no
+#   other site uses this code), 8 duplicate store names, 9 the OpenFGA API
+#   failed (transport error, non-2xx, or a malformed/stalled/capped response
+#   body) — never a verdict about state, 64 usage.
 #
 # Usage:
 #   ./setup-openfga.sh --target production --create-litcal-store
@@ -237,13 +239,20 @@ list_all_stores() {
             exit "$EXIT_API"
         fi
         # Belt and braces on top of fga's status check: a 200 body that is not
-        # shaped like a store listing is still not a usable listing.
+        # shaped like a store listing is still not a usable listing. A null
+        # "stores" (as opposed to an array) is malformed, not an empty page —
+        # real OpenFGA emits [], and reading a null as empty is exactly how
+        # this branch's two Critical bugs did their damage.
         if ! page_stores=$(echo "$page" | jq -ce '[.stores[]?]' 2>/dev/null) \
-           || ! echo "$page" | jq -e 'has("stores")' >/dev/null 2>&1; then
+           || ! echo "$page" | jq -e '(.stores | type) == "array"' >/dev/null 2>&1; then
             err "Unexpected body from GET /stores: $page"
             exit "$EXIT_API"
         fi
-        acc=$(jq -cn --argjson a "$acc" --argjson b "$page_stores" '$a + $b')
+        # Feed both arrays through stdin, not argv: --argjson puts the whole
+        # accumulator in one argv slot, and against Linux's 128 KB
+        # MAX_ARG_STRLEN that exec fails around 900 stores. stdin has no such
+        # limit.
+        acc=$(printf '%s\n%s\n' "$acc" "$page_stores" | jq -cs 'add')
 
         prev_token="$token"
         token=$(echo "$page" | jq -r '.continuation_token // empty')
@@ -296,7 +305,7 @@ read_authorization_models() {
         err "than treating the failure as 'this store has no model yet'."
         exit "$EXIT_API"
     fi
-    if ! echo "$body" | jq -e 'has("authorization_models")' >/dev/null 2>&1; then
+    if ! echo "$body" | jq -e '(.authorization_models | type) == "array"' >/dev/null 2>&1; then
         err "Unexpected body from GET /stores/${store_id}/authorization-models: $body"
         exit "$EXIT_API"
     fi
@@ -554,7 +563,7 @@ read_all_tuples() {
         pages=$((pages + 1))
         if [[ $pages -gt $TUPLE_READ_MAX_PAGES ]]; then
             err "Read pagination exceeded ${TUPLE_READ_MAX_PAGES} pages — refusing to continue"
-            exit 7
+            exit "$EXIT_API"
         fi
         body=$(jq -cn --argjson ps "$TUPLE_READ_PAGE" --arg t "$token" \
             'if $t == "" then {page_size:$ps} else {page_size:$ps, continuation_token:$t} end')
@@ -563,20 +572,25 @@ read_all_tuples() {
             exit "$EXIT_API"
         fi
         # Belt and braces on top of fga's status check: a 200 body that is not
-        # shaped like a read response is still not a usable read.
+        # shaped like a read response is still not a usable read. A null
+        # "tuples" (as opposed to an array) is malformed, not an empty page —
+        # see the same note in list_all_stores.
         if ! page_tuples=$(echo "$page" | jq -ce '[.tuples[]? | .key | {user, relation, object}]' 2>/dev/null) \
-           || ! echo "$page" | jq -e 'has("tuples")' >/dev/null 2>&1; then
+           || ! echo "$page" | jq -e '(.tuples | type) == "array"' >/dev/null 2>&1; then
             err "Read returned an unexpected body: $page"
-            exit 7
+            exit "$EXIT_API"
         fi
-        acc=$(jq -cn --argjson a "$acc" --argjson b "$page_tuples" '$a + $b')
+        # Feed both arrays through stdin, not argv — see the matching comment
+        # in list_all_stores: --argjson blows Linux's 128 KB MAX_ARG_STRLEN
+        # around 1600 tuples.
+        acc=$(printf '%s\n%s\n' "$acc" "$page_tuples" | jq -cs 'add')
 
         prev_token="$token"
         token=$(echo "$page" | jq -r '.continuation_token // empty')
         [[ -z "$token" ]] && break
         if [[ "$token" == "$prev_token" ]]; then
             err "Read pagination stalled — server repeated continuation token"
-            exit 7
+            exit "$EXIT_API"
         fi
     done
 
@@ -638,11 +652,17 @@ seed_tuples_if_present() {
     # write only the difference.
     local existing_json
     existing_json=$(read_all_tuples "$store_id") || exit $?
+    # existing_json can itself be a whole-store tuple listing — the same
+    # argv-size hazard as the paginating readers (--argjson caps out around
+    # 128 KB / MAX_ARG_STRLEN), just one step downstream. Route it in via
+    # process substitution + --slurpfile instead of argv, same as
+    # $tuples_file already is below; the shell tears the fd down on its own,
+    # no temp file to clean up.
 
     local key_expr='"\(.user)|\(.relation)|\(.object)"'
     local missing_json
-    missing_json=$(jq -c -n --argjson existing "$existing_json" --slurpfile f "$tuples_file" "
-        (\$existing | map({(${key_expr}): true}) | add // {}) as \$seen
+    missing_json=$(jq -c -n --slurpfile existing <(printf '%s' "$existing_json") --slurpfile f "$tuples_file" "
+        (\$existing[0] | map({(${key_expr}): true}) | add // {}) as \$seen
         | [ \$f[0].tuples[] | {user, relation, object}
             | select(\$seen[${key_expr}] != true) ]")
 
@@ -682,11 +702,11 @@ seed_tuples_if_present() {
     # Anything this run wrote came from the file, so pre-write state is the
     # only place drift can live.
     local drift_json drift_count
-    drift_json=$(jq -c -n --argjson existing "$existing_json" --slurpfile f "$tuples_file" "
+    drift_json=$(jq -c -n --slurpfile existing <(printf '%s' "$existing_json") --slurpfile f "$tuples_file" "
         (\$f[0].tuples | map({user, relation, object})) as \$want
         | (\$want | map(.relation) | unique) as \$rels
         | (\$want | map({(${key_expr}): true}) | add // {}) as \$wantset
-        | [ \$existing[]
+        | [ \$existing[0][]
             | select(.relation as \$r | \$rels | index(\$r))
             | select(\$wantset[${key_expr}] != true) ]")
     drift_count=$(echo "$drift_json" | jq 'length')
