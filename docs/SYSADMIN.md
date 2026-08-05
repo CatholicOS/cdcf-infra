@@ -318,6 +318,8 @@ The Frontend gets NO `OPENFGA_*` vars and NO `ZITADEL_MACHINE_TOKEN` — it does
 
 A snapshot, not a source of truth: the per-property handoffs in [`auth/handoffs/`](../auth/handoffs/) own the IDs, and this table exists so an operator can see at a glance what is actually provisioned before running anything. Every row was read back from the live Zitadel and OpenFGA APIs on the date above.
 
+**Running OpenFGA version: `v1.18.2`**, in production since 2026-08-04 10:53Z. Verified 2026-08-05 from the container itself, not from a file — `docker inspect cdcf-auth-openfga-1` reports `Config.Image=openfga/openfga:v1.18.2`, and the server's own startup log reports `build.version: v1.18.2` (`build.commit: 560d5d3d`). It was upgraded by pulling the image in the Plesk Docker interface and recreating the container; `auth/docker-compose.prod.yml` was only corrected to match afterwards (PR #28), so between those two events the compose file described a version that was not running. See the drift note in §10.3.
+
 | Org | Zitadel Project | Project roles | OpenFGA store |
 |---|---|---|---|
 | `CDCF` | `CDCF Website` (`376050623310725125`) | `subscriber`, `contributor`, `author`, `editor`, `administrator` | none — by design, see [`handoffs/cdcf-website.md`](../auth/handoffs/cdcf-website.md) |
@@ -619,6 +621,7 @@ All require automation PAT in `Authorization: Bearer ...` + `Host: auth.catholic
 
 ### 10.3 Gotchas list (one-liners)
 
+- **`docker-compose.prod.yml` is not authoritative for what is running.** Plesk's Docker extension can pull a new image and recreate a container from its UI without touching the compose file in git, and nothing reconciles the two. This is not hypothetical: production OpenFGA was moved from `v1.15.1` to `v1.18.2` that way on 2026-08-04, and the compose file still said `v1.15.1` for a day afterwards — long enough that a plan was written to "upgrade" a service that was already upgraded. Before trusting a pin, check the container: `docker inspect <name> --format '{{.Config.Image}}'`, and confirm against the service's own startup log (`docker logs <name> | grep build.version`), since the image *tag* can be re-pointed while the container keeps running an older layer.
 - Zitadel v2 verb inconsistency: `AddOrganization` but `CreateProject` + `CreateApplication`. `UpdateProject` body uses `projectId`, not `id`.
 - Zitadel v2 `PATCH /v2/users/{id}` requires a `human: {}` or `machine: {}` type discriminator in the body — even for top-level field updates like `username`. Without it the API returns `501 "user type is not implemented"`, which sounds like a real gap but is actually a missing-discriminator error. See §10.2 for the correct body shape.
 - `DEFAULTINSTANCE_DOMAINPOLICY_*` env vars apply to USERS CREATED AFTER bootstrap, not retroactively to the bootstrap admin itself.

@@ -368,6 +368,16 @@ Expected: the merge commit, and both lines showing `v1.18.2`. The running contai
 
 ### Task 5: Operator — restart production and verify
 
+> **SUPERSEDED — not required. Production was already running `v1.18.2` before this plan was written.**
+>
+> The operator upgraded it on **2026-08-04 10:53Z** by pulling the image in the Plesk Docker interface and recreating the container. Verified 2026-08-05 from the container rather than from a file: `Config.Image=openfga/openfga:v1.18.2`, and the server's own startup log reports `build.version: v1.18.2` (`build.commit: 560d5d3d`).
+>
+> This plan was written on the premise that production ran `v1.15.1`, which came from `auth/docker-compose.prod.yml` — a file that had drifted from reality, because Plesk's Docker extension does not write back to git. PR #28 was therefore a **correction of the compose file**, not an upgrade of the service, despite how it was titled and described.
+>
+> Task 1's verification keeps its value regardless: it established empirically that `v1.15.1 → v1.18.2` applies no Postgres migration, which is what makes the already-performed upgrade safe rather than lucky. The steps below are retained as the runbook for the *next* version change, where the premise will need re-checking first.
+>
+> **Lesson recorded in `docs/SYSADMIN.md` §10.3:** verify the running container, not the compose pin, before planning work around a version.
+
 **Files:** none (operator action on the VPS).
 
 - [ ] **Step 1: Record the pre-upgrade state**
