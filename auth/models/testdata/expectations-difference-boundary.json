@@ -1,7 +1,7 @@
 {
   "_comment": "Fixture proving relation_includes does not treat a target reachable through the SUBTRACT side of a difference as included. document.viewer in difference-boundary-model.json is '(this OR admin) MINUS admin' — admin is explicitly excluded from viewer, not included — so this must be reported as a violation, not a pass.",
   "consumer": "TestFixture-Difference-Boundary",
-  "store": "testdata/difference-boundary-model",
+  "store": "difference-boundary-model",
   "relation_includes": {
     "document": { "viewer": ["admin"] }
   }

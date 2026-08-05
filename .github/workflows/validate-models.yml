@@ -11,13 +11,37 @@ name: Validate model expectations
 # No secrets: every expectations_url in auth/models/consumers.json is a
 # public raw.githubusercontent.com URL, and jq/curl are preinstalled on the
 # ubuntu-latest runner.
+#
+# Two steps, not one, because they cover different things. The registry step
+# is the actual enforcement, but auth/models/consumers.json is legitimately
+# empty right now, so on its own this job's entire behaviour is "an empty
+# registry passes" — the rewrite walk, the wildcard resolution and the schema
+# check never execute, and a regression in any of them would ship green. The
+# self-test step runs the fixtures under auth/models/testdata/ and asserts
+# each one's exact outcome, so the walk is exercised on every run whether or
+# not a consumer is registered.
+#
+# push and merge_group are here alongside pull_request so a change that
+# reaches main without a PR run — a direct push, or a merge-queue entry whose
+# combination with main was never itself PR-validated — is still checked.
 
 on:
   pull_request:
     paths:
       - 'auth/models/**'
       - 'auth/validate-expectations.sh'
+      - 'auth/validate-expectations.selftest.sh'
       - '.github/workflows/validate-models.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'auth/models/**'
+      - 'auth/validate-expectations.sh'
+      - 'auth/validate-expectations.selftest.sh'
+      - '.github/workflows/validate-models.yml'
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
@@ -37,6 +61,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Runs first: if the validator itself is broken, that is a more useful
+      # failure than whatever it then reports about the registry.
+      - name: Self-test the validator against its fixtures
+        run: ./auth/validate-expectations.selftest.sh
 
       - name: Validate models against consumer expectations
         run: ./auth/validate-expectations.sh

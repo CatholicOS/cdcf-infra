@@ -1,0 +1,7 @@
+{
+  "_comment": "Companion to expectations-wildcard-scope.json, proving the widened wildcard is not simply failing everything: required_types names only `diocesan_calendar`, so `user` (a bare type with no relations, never declared by this consumer) and `national_calendar` stay out of scope entirely and this must pass.",
+  "consumer": "TestFixture-Wildcard-Scope-Pass",
+  "store": "wildcard-scope-model",
+  "required_types": ["diocesan_calendar"],
+  "required_relations": { "*": ["admin", "editor", "viewer"] }
+}

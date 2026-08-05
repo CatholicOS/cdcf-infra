@@ -1,0 +1,5 @@
+{
+  "_comment": "I4 regression fixture. A stub declaring identity but no rule keys at all. Before schema validation this reported as satisfied; a contract that asserts nothing must never be reported as a contract that holds.",
+  "consumer": "TestFixture-No-Rules",
+  "store": "LiturgicalCalendar"
+}

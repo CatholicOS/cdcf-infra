@@ -13,6 +13,11 @@
 # they depend on against it, so a breaking change fails in this repo's CI,
 # in the PR that causes it.
 #
+# The failure mode this script exists to avoid is a FALSE PASS — reporting a
+# contract satisfied when it is not. A false violation is noisy and gets
+# investigated; a false pass ships silently. Every design decision below
+# resolves in that direction: when in doubt, report a problem.
+#
 # Consumers are consumer-authored and consumer-hosted: this script only ever
 # reads auth/models/consumers.json and the URLs it points at, and never
 # writes an expectations file itself. The expectations schema:
@@ -27,23 +32,41 @@
 #     "relation_includes": { "*": { "editor": ["admin"] } }
 #   }
 #
-# "*" as a type key in required_relations / forbidden_relations /
-# relation_includes means "every type in the model that defines at least one
-# relation" (a type like `user`, with no relations block at all, is never a
-# match for a wildcard — there is nothing on it to require, forbid, or check
-# a rewrite of). relation_includes asserts a SUFFICIENT path: holding the
-# target relation, on its own, is enough to hold the named relation. That is
-# LitCal's real invariant — an admin can edit and view, because editor and
-# viewer are unions including admin — and it is a sufficiency claim, not a
-# necessity one. A type that does not define the named relation at all is
-# skipped for that check (there is nothing to include or fail to include).
+# That schema is ENFORCED, not merely documented (see SCHEMA_JQ). An unknown
+# top-level key is rejected rather than ignored, because `required_relation`
+# or `relation_include` — singular, a plausible typo — would otherwise make a
+# file its author believes asserts a contract assert nothing and report as
+# satisfied. For the same reason a file declaring no rule key at all is
+# rejected: a contract that asserts nothing must never be reported as a
+# contract that holds. Schema rejection is reported and exits distinctly from
+# a violation (see the exit codes below).
 #
-# That one rule is what the rewrite walk (see includesRelation's own comment
-# for the full derivation) is built around, and it is also why the walk
-# deliberately does NOT treat two constructs as inclusion — for a contract
-# validator, wrongly reporting a contract as satisfied is worse than wrongly
-# reporting a violation (a false failure gets looked at; a false pass does
-# not):
+# "*" AS A TYPE KEY in required_relations / forbidden_relations /
+# relation_includes resolves to the types the consumer listed in
+# required_types when that key is present, and to every type in the model
+# when it is not. A type in scope that has NO relations block yields a
+# violation for each relation required of it — it is emphatically not
+# skipped. That is what keeps a bare type like `user` out of scope for a
+# consumer that never declared it, while making the deletion of an entire
+# relations block fail loudly. (An earlier version resolved "*" to "types
+# that have a relations block", which meant deleting one relation failed but
+# deleting the whole block passed — the more destructive edit was the one
+# that slipped through.)
+#
+# relation_includes asserts a SUFFICIENT path: holding the target relation,
+# on its own, is enough to hold the named relation. That is LitCal's real
+# invariant — an admin can edit and view, because editor and viewer are
+# unions including admin — and it is a sufficiency claim, not a necessity
+# one. Within a scope, a type that does not define the named relation is
+# skipped for that check (there is nothing there to include or fail to
+# include) — but if NO type in scope defines the named relation at all, that
+# is a violation, not a vacuous pass: the consumer named a relation the model
+# does not have. Under an explicitly named type key rather than "*", a
+# missing named relation on that type is likewise a violation.
+#
+# That one sufficiency rule is what the rewrite walk (see includesRelation's
+# own comment for the full derivation) is built around, and it is also why
+# the walk deliberately does NOT treat two constructs as inclusion:
 #
 #   - tupleToUserset is never descended into. "editor from governed_by" (a
 #     TTU) grants whatever `editor` is on a *different* object reached
@@ -68,10 +91,13 @@
 # Every violation is reported, not just the first — an operator fixing a
 # model wants the whole list in one pass, not one failure per CI run.
 #
-# A fetch failure (network error, non-2xx, or unparseable JSON) is reported
-# and fails the run distinctly from a violation: an expectations file this
-# script could not retrieve is a contract that could not be verified, which
-# is never the same as a contract that was checked and found satisfied.
+# A fetch failure (network error, non-2xx, unparseable JSON, or a fetched
+# file that fails schema validation) is reported and fails the run distinctly
+# from a violation: an expectations file this script could not retrieve or
+# could not make sense of is a contract that could not be VERIFIED, which is
+# never the same as a contract that was checked and found satisfied. jq's own
+# failures are trapped and mapped onto the documented exit codes below rather
+# than being allowed to abort the script with jq's raw exit status.
 #
 # Usage:
 #   ./validate-expectations.sh
@@ -80,15 +106,24 @@
 #
 #   ./validate-expectations.sh --expectations-file PATH --store NAME
 #       Validates a single local expectations file against
-#       auth/models/NAME.json, with no network access. Used by this
-#       script's own fixture tests under auth/models/testdata/.
+#       auth/models/NAME.json, with no network access.
+#
+#   ./validate-expectations.sh --expectations-file PATH --model-file PATH
+#       Same, but against a model file at an arbitrary path — which is how
+#       the fixtures under auth/models/testdata/ are validated, since their
+#       standalone boundary models are not stores under auth/models/ and so
+#       have no --store name. auth/validate-expectations.selftest.sh runs
+#       every one of them and is what CI executes.
 #
 # Requires: bash >= 4, curl, jq.
 #
 # Exit codes: 0 all consumers' expectations satisfied (including an empty
 #   registry); 1 one or more expectations violated; 2 one or more consumers'
-#   expectations files could not be fetched or parsed (never combined with
-#   1's meaning — see above); 3 a referenced model file is missing; 64 usage.
+#   expectations files could not be fetched, parsed, schema-validated, or
+#   evaluated (never combined with 1's meaning — see above); 3 a referenced
+#   model file is missing; 64 usage error, including a locally supplied
+#   expectations file or registry that is malformed or fails schema
+#   validation.
 
 set -euo pipefail
 
@@ -114,38 +149,114 @@ err()  { echo "${R}    ✗${N} $*" >&2; }
 
 usage() {
     cat >&2 <<EOF
-Usage: $0 [--expectations-file PATH --store NAME]
+Usage: $0 [--expectations-file PATH (--store NAME | --model-file PATH)]
 
 With no arguments, validates every consumer registered in
 auth/models/consumers.json against auth/models/<store>.json, fetching each
 consumer's expectations_url over HTTPS.
 
   --expectations-file PATH   Validate this local expectations file instead
-                              of fetching one. Must be paired with --store.
+                              of fetching one. Must be paired with --store
+                              or --model-file.
   --store NAME                Model to validate against is auth/models/NAME.json.
-                              Must be paired with --expectations-file.
+  --model-file PATH           Model to validate against is PATH. Use for the
+                              standalone fixture models under
+                              auth/models/testdata/, which are not stores.
+                              Mutually exclusive with --store.
 
-Exit codes: 0 pass, 1 violation(s) found, 2 could not fetch/parse an
-expectations file, 3 model file missing, 64 usage.
+Exit codes: 0 pass, 1 violation(s) found, 2 could not fetch/parse/evaluate an
+expectations file, 3 model file missing, 64 usage or malformed local input.
 EOF
     exit "$EXIT_USAGE"
 }
 
 EXP_FILE_ARG=""
 STORE_ARG=""
+MODEL_FILE_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --expectations-file) [[ $# -ge 2 ]] || usage; EXP_FILE_ARG="$2"; shift 2 ;;
         --store)             [[ $# -ge 2 ]] || usage; STORE_ARG="$2"; shift 2 ;;
+        --model-file)        [[ $# -ge 2 ]] || usage; MODEL_FILE_ARG="$2"; shift 2 ;;
         -h|--help)           usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
     esac
 done
 
-if [[ -n "$EXP_FILE_ARG" || -n "$STORE_ARG" ]]; then
-    [[ -n "$EXP_FILE_ARG" && -n "$STORE_ARG" ]] || usage
+if [[ -n "$STORE_ARG" && -n "$MODEL_FILE_ARG" ]]; then
+    echo "--store and --model-file are mutually exclusive." >&2
+    usage
 fi
+
+if [[ -n "$EXP_FILE_ARG" || -n "$STORE_ARG" || -n "$MODEL_FILE_ARG" ]]; then
+    [[ -n "$EXP_FILE_ARG" ]] || usage
+    [[ -n "$STORE_ARG" || -n "$MODEL_FILE_ARG" ]] || usage
+fi
+
+# --- expectations schema program --------------------------------------------
+#
+# Emits a JSON array of schema-error strings — empty when the file is a
+# well-formed expectations file. Unknown top-level keys and a total absence
+# of rule keys are both errors (see the header). Rule values are type-checked
+# too: a `required_types` given as a bare string, say, would otherwise blow
+# up mid-walk inside the validation program as a raw jq error rather than as
+# a legible complaint about the consumer's file.
+read -r -d '' SCHEMA_JQ <<'JQ_PROGRAM' || true
+def knownKeys: ["_comment","consumer","store",
+                "required_types","required_relations",
+                "forbidden_types","forbidden_relations","relation_includes"];
+def ruleKeys:  ["required_types","required_relations",
+                "forbidden_types","forbidden_relations","relation_includes"];
+def listRules: ["required_types","forbidden_types"];
+def mapRules:  ["required_relations","forbidden_relations"];
+
+def isStringArray: (type == "array") and (all(.[]; type == "string"));
+
+if type != "object" then
+  ["expectations file must be a JSON object, but its top level is " + (type)]
+else
+  [ keys_unsorted[] as $k
+    | select((knownKeys | index($k)) == null)
+    | "unknown top-level key \"" + $k + "\" — known keys are: " + (knownKeys | join(", "))
+  ]
+  +
+  ( if ([keys_unsorted[] as $k | select((ruleKeys | index($k)) != null)] | length) == 0 then
+      ["declares no rule keys at all (needs at least one of: " + (ruleKeys | join(", "))
+       + ") — a contract that asserts nothing must not be reported as satisfied"]
+    else [] end )
+  +
+  [ listRules[] as $k
+    | select(has($k))
+    | select((.[$k] | isStringArray) | not)
+    | "\"" + $k + "\" must be an array of strings"
+  ]
+  +
+  [ mapRules[] as $k
+    | select(has($k))
+    | if (.[$k] | type) != "object" then
+        "\"" + $k + "\" must be an object mapping a type name (or \"*\") to an array of relation names"
+      else
+        ( .[$k] | to_entries[] | select((.value | isStringArray) | not)
+          | "\"" + $k + "." + .key + "\" must be an array of strings" )
+      end
+  ]
+  +
+  ( if (has("relation_includes") | not) then []
+    elif (.relation_includes | type) != "object" then
+      ["\"relation_includes\" must be an object mapping a type name (or \"*\") to relation rules"]
+    else
+      [ .relation_includes | to_entries[] as $e
+        | if ($e.value | type) != "object" then
+            "\"relation_includes." + $e.key + "\" must be an object mapping a relation name to an array of target relation names"
+          else
+            ( $e.value | to_entries[] | select((.value | isStringArray) | not)
+              | "\"relation_includes." + $e.key + "." + .key + "\" must be an array of strings" )
+          end
+      ]
+    end )
+end
+JQ_PROGRAM
 
 # --- jq validation program --------------------------------------------------
 #
@@ -162,8 +273,14 @@ def relsOf($t):
 def modelTypes:
   [$model.type_definitions[]?.type];
 
+# "*" is the consumer's own declared surface when they declared one, and the
+# whole model otherwise. It is deliberately NOT "types that happen to have a
+# relations block": that made a type whose relations were deleted wholesale
+# drop silently out of scope, so the destructive edit passed while a smaller
+# one failed. A relation-less type in scope now reaches relsOf's {} default
+# and fails every relation required of it, which is the point.
 def wildcardTypes:
-  [$model.type_definitions[] | select(.relations != null) | .type];
+  if ($exp | has("required_types")) then ($exp.required_types // []) else modelTypes end;
 
 def typesForKey($k):
   if $k == "*" then wildcardTypes else [$k] end;
@@ -237,42 +354,100 @@ def includesRelation($rewrite; $target):
   ]
 ) as $v4
 |
+# Per-type skipping is correct — a type that does not define the named
+# relation is not in scope for a claim about that relation — but skipping
+# every type in scope is not a pass, it is a claim about a relation the
+# model does not have. Without this, relation_includes on a misspelled or
+# since-removed relation reported "satisfied" while checking nothing.
 (
   [ ($exp.relation_includes // {}) | keys[] as $k
-    | typesForKey($k)[] as $t
-    | (relsOf($t)) as $rels
     | ($exp.relation_includes[$k] | keys[]) as $namedRel
-    | select($rels | has($namedRel))
-    | ($exp.relation_includes[$k][$namedRel][]) as $target
-    | select(includesRelation($rels[$namedRel]; $target) | not)
-    | "relation_includes: type \"" + $t + "\" relation \"" + $namedRel + "\" does not include \"" + $target + "\" via computedUserset"
+    | ([typesForKey($k)[] | select(relsOf(.) | has($namedRel))]) as $defining
+    | if ($defining | length) == 0 then
+        ( if $k == "*" then
+            "relation_includes: no type in scope defines relation \"" + $namedRel
+              + "\" — nothing in the model can satisfy a claim about it"
+          else
+            "relation_includes: type \"" + $k + "\" does not define relation \"" + $namedRel + "\""
+          end )
+      else
+        ( $defining[] as $t
+          | ($exp.relation_includes[$k][$namedRel][]) as $target
+          | select(includesRelation(relsOf($t)[$namedRel]; $target) | not)
+          | "relation_includes: type \"" + $t + "\" relation \"" + $namedRel
+              + "\" does not include \"" + $target + "\" via computedUserset"
+        )
+      end
   ]
 ) as $v5
 |
 $v1 + $v2 + $v3 + $v4 + $v5
 JQ_PROGRAM
 
+# check_schema EXP_FILE LABEL
+#
+# Returns 0 when EXP_FILE parses as JSON and satisfies the expectations
+# schema, 1 otherwise (reporting every problem). Every caller must run this
+# before touching the file's contents: it is what stops a jq read of an
+# array-rooted, HTML or truncated file from aborting the script with jq's own
+# exit status, outside the documented scheme.
+check_schema() {
+    local exp_file="$1" label="$2"
+    local schema_errs
+
+    if ! jq -e 'type' "$exp_file" >/dev/null 2>&1; then
+        err "[$label] expectations file is not valid JSON (or is empty)"
+        return 1
+    fi
+
+    if ! schema_errs=$(jq -r "$SCHEMA_JQ"' | .[]' "$exp_file" 2>/dev/null); then
+        err "[$label] internal error while schema-validating expectations"
+        return 1
+    fi
+
+    if [[ -n "$schema_errs" ]]; then
+        while IFS= read -r line; do
+            err "[$label] expectations schema error: $line"
+        done <<<"$schema_errs"
+        return 1
+    fi
+
+    return 0
+}
+
 # validate_one EXP_FILE MODEL_FILE CONSUMER STORE
 #
 # Prints every violation (prefixed with consumer and store) to stderr via
-# err, and echoes the violation count to stdout. Caller decides what a
-# nonzero count means for the overall exit code.
+# err, and echoes the violation count to stdout — or "-1" when jq itself
+# failed, which the caller must treat as "unverified", never as clean.
 validate_one() {
     local exp_file="$1" model_file="$2" consumer="$3" store="$4"
-    local violations count
+    local violations count jq_err
 
+    jq_err=$(mktemp)
+
+    # jq's stderr goes to its own file, never into $violations: the count
+    # below parses $violations as JSON, and folding a diagnostic into it
+    # would make an internal error look like malformed output instead.
     if ! violations=$(jq -n --slurpfile exp "$exp_file" --slurpfile model "$model_file" \
-            '($exp[0]) as $exp | ($model[0]) as $model | '"$VALIDATE_JQ" 2>&1); then
-        err "[$consumer/$store] internal error evaluating expectations: $violations"
+            '($exp[0]) as $exp | ($model[0]) as $model | '"$VALIDATE_JQ" 2>"$jq_err"); then
+        err "[$consumer/$store] internal error evaluating expectations: $(tr '\n' ' ' <"$jq_err")"
+        rm -f "$jq_err"
+        echo "-1"
+        return
+    fi
+    rm -f "$jq_err"
+
+    if ! count=$(jq 'length' <<<"$violations" 2>/dev/null); then
+        err "[$consumer/$store] internal error reading validation output"
         echo "-1"
         return
     fi
 
-    count=$(echo "$violations" | jq 'length')
     if [[ "$count" -gt 0 ]]; then
-        echo "$violations" | jq -r '.[]' | while IFS= read -r line; do
+        while IFS= read -r line; do
             err "[$consumer/$store] $line"
-        done
+        done < <(jq -r '.[]' <<<"$violations")
     fi
     echo "$count"
 }
@@ -281,20 +456,39 @@ validate_one() {
 
 if [[ -n "$EXP_FILE_ARG" ]]; then
     [[ -f "$EXP_FILE_ARG" ]] || { echo "Expectations file not found: $EXP_FILE_ARG" >&2; exit "$EXIT_USAGE"; }
-    MODEL_FILE="${MODELS_DIR}/${STORE_ARG}.json"
+
+    if [[ -n "$MODEL_FILE_ARG" ]]; then
+        MODEL_FILE="$MODEL_FILE_ARG"
+        MODEL_DISPLAY="$MODEL_FILE_ARG"
+        STORE_LABEL="$(basename "$MODEL_FILE_ARG" .json)"
+    else
+        MODEL_FILE="${MODELS_DIR}/${STORE_ARG}.json"
+        MODEL_DISPLAY="auth/models/${STORE_ARG}.json"
+        STORE_LABEL="$STORE_ARG"
+    fi
     [[ -f "$MODEL_FILE" ]] || { err "Model file not found: $MODEL_FILE"; exit "$EXIT_MODEL_MISSING"; }
 
-    CONSUMER=$(jq -r '.consumer // "unknown"' "$EXP_FILE_ARG")
-    log "Validating auth/models/${STORE_ARG}.json against $EXP_FILE_ARG (consumer: $CONSUMER)"
+    # Schema first, and before any read of the file's contents: an empty or
+    # null expectations file used to make every rule's `// {}` default fire
+    # and print "✓ No violations" — a pass reported for a file that said
+    # nothing at all.
+    check_schema "$EXP_FILE_ARG" "$EXP_FILE_ARG" || exit "$EXIT_USAGE"
 
-    COUNT=$(validate_one "$EXP_FILE_ARG" "$MODEL_FILE" "$CONSUMER" "$STORE_ARG")
+    if ! CONSUMER=$(jq -r '.consumer // "unknown"' "$EXP_FILE_ARG" 2>/dev/null); then
+        err "Could not read consumer name from $EXP_FILE_ARG"
+        exit "$EXIT_USAGE"
+    fi
+    log "Validating ${MODEL_DISPLAY} against $EXP_FILE_ARG (consumer: $CONSUMER)"
+
+    COUNT=$(validate_one "$EXP_FILE_ARG" "$MODEL_FILE" "$CONSUMER" "$STORE_LABEL")
     if [[ "$COUNT" == "-1" ]]; then
+        err "Expectations could not be evaluated — the contract is unverified, which is not the same as satisfied."
         exit "$EXIT_FETCH"
     elif [[ "$COUNT" -gt 0 ]]; then
         err "$COUNT violation(s) found."
         exit "$EXIT_VIOLATION"
     fi
-    ok "No violations. $STORE_ARG satisfies $CONSUMER's expectations."
+    ok "No violations. $STORE_LABEL satisfies $CONSUMER's expectations."
     exit 0
 fi
 
@@ -302,8 +496,25 @@ fi
 
 [[ -f "$CONSUMERS_FILE" ]] || { err "Registry not found: $CONSUMERS_FILE"; exit "$EXIT_MODEL_MISSING"; }
 
-if ! jq -e . "$CONSUMERS_FILE" >/dev/null 2>&1; then
-    err "Registry is not valid JSON: $CONSUMERS_FILE"
+if ! jq -e 'type == "array"' "$CONSUMERS_FILE" >/dev/null 2>&1; then
+    err "Registry is not a JSON array of consumer entries: $CONSUMERS_FILE"
+    exit "$EXIT_USAGE"
+fi
+
+# Every entry is checked up front, so the per-entry reads below cannot fail
+# with jq's own exit status partway through the loop.
+if ! REGISTRY_ERRS=$(jq -r '
+        to_entries[]
+        | select((.value | type) != "object"
+                 or ([.value.consumer, .value.store, .value.expectations_url]
+                     | any(type != "string")))
+        | "entry [" + (.key | tostring) + "] must be an object with string consumer, store and expectations_url"
+    ' "$CONSUMERS_FILE" 2>/dev/null); then
+    err "Could not read registry: $CONSUMERS_FILE"
+    exit "$EXIT_USAGE"
+fi
+if [[ -n "$REGISTRY_ERRS" ]]; then
+    while IFS= read -r line; do err "Registry schema error: $line"; done <<<"$REGISTRY_ERRS"
     exit "$EXIT_USAGE"
 fi
 
@@ -321,9 +532,9 @@ FETCH_FAILURES=0
 
 for i in $(seq 0 $((NUM_CONSUMERS - 1))); do
     ENTRY=$(jq -c ".[$i]" "$CONSUMERS_FILE")
-    CONSUMER=$(echo "$ENTRY" | jq -r '.consumer')
-    STORE=$(echo "$ENTRY" | jq -r '.store')
-    URL=$(echo "$ENTRY" | jq -r '.expectations_url')
+    CONSUMER=$(jq -r '.consumer' <<<"$ENTRY")
+    STORE=$(jq -r '.store' <<<"$ENTRY")
+    URL=$(jq -r '.expectations_url' <<<"$ENTRY")
 
     MODEL_FILE="${MODELS_DIR}/${STORE}.json"
     if [[ ! -f "$MODEL_FILE" ]]; then
@@ -336,7 +547,12 @@ for i in $(seq 0 $((NUM_CONSUMERS - 1))); do
     TMP_EXP=$(mktemp)
     TMP_ERR=$(mktemp)
 
-    HTTP_STATUS=$(curl -sS -o "$TMP_EXP" -w '%{http_code}' --connect-timeout 10 --max-time 30 "$URL" 2>"$TMP_ERR") || {
+    # -L: a consumer reorganizing their repo and leaving a 301 behind should
+    # not read as a permanently unverifiable contract. These are public raw
+    # URLs with no credentials attached, so following redirects costs
+    # nothing; --max-redirs bounds a redirect loop.
+    HTTP_STATUS=$(curl -sS -L --max-redirs 5 -o "$TMP_EXP" -w '%{http_code}' \
+        --connect-timeout 10 --max-time 30 "$URL" 2>"$TMP_ERR") || {
         err "[$CONSUMER/$STORE] could not fetch expectations (transport error): $URL"
         [[ -s "$TMP_ERR" ]] && err "  $(cat "$TMP_ERR")"
         rm -f "$TMP_ERR" "$TMP_EXP"
@@ -352,8 +568,10 @@ for i in $(seq 0 $((NUM_CONSUMERS - 1))); do
         continue
     fi
 
-    if ! jq -e . "$TMP_EXP" >/dev/null 2>&1; then
-        err "[$CONSUMER/$STORE] could not parse expectations as JSON: $URL"
+    # A fetched file that is not a well-formed expectations file is an
+    # unverifiable contract, not a satisfied one — same bucket as a 404.
+    if ! check_schema "$TMP_EXP" "$CONSUMER/$STORE"; then
+        err "[$CONSUMER/$STORE] expectations file at $URL is not usable — contract unverified."
         rm -f "$TMP_EXP"
         FETCH_FAILURES=$((FETCH_FAILURES + 1))
         continue
@@ -372,13 +590,13 @@ for i in $(seq 0 $((NUM_CONSUMERS - 1))); do
 done
 
 if [[ "$TOTAL_VIOLATIONS" -gt 0 && "$FETCH_FAILURES" -gt 0 ]]; then
-    err "$TOTAL_VIOLATIONS expectations violation(s) violated, and $FETCH_FAILURES consumer(s)' expectations could not be fetched. An unfetched contract is unverified, not satisfied."
+    err "$TOTAL_VIOLATIONS expectations violation(s) violated, and $FETCH_FAILURES consumer(s)' expectations could not be verified. An unverified contract is not a satisfied one."
     exit "$EXIT_VIOLATION"
 elif [[ "$TOTAL_VIOLATIONS" -gt 0 ]]; then
     err "$TOTAL_VIOLATIONS expectations violation(s) found."
     exit "$EXIT_VIOLATION"
 elif [[ "$FETCH_FAILURES" -gt 0 ]]; then
-    err "$FETCH_FAILURES consumer(s)' expectations could not be fetched — contract unverified, treated as a failure, distinct from a violation."
+    err "$FETCH_FAILURES consumer(s)' expectations could not be fetched or validated — contract unverified, treated as a failure, distinct from a violation."
     exit "$EXIT_FETCH"
 fi
 

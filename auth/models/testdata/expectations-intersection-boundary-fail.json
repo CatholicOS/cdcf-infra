@@ -1,7 +1,7 @@
 {
   "_comment": "Fixture proving relation_includes requires the target in EVERY branch of an intersection, not just one. resource.needs_both = admin AND editor: holding admin alone does not satisfy needs_both (editor is also required), so admin is a necessary-but-not-sufficient condition, not an inclusion — this must be reported as a violation, not a pass.",
   "consumer": "TestFixture-Intersection-Boundary-Fail",
-  "store": "testdata/intersection-boundary-model",
+  "store": "intersection-boundary-model",
   "relation_includes": {
     "resource": { "needs_both": ["admin"] }
   }

@@ -1,0 +1,7 @@
+{
+  "_comment": "C1 regression fixture. `national_calendar` in wildcard-scope-model.json has no relations block; it is declared in required_types, so the \"*\" wildcard puts it in scope and required_relations must report admin/editor/viewer as missing on it. Before the fix, \"*\" resolved only to types that already had a relations block, so deleting a whole relations block PASSED while deleting a single relation failed.",
+  "consumer": "TestFixture-Wildcard-Scope",
+  "store": "wildcard-scope-model",
+  "required_types": ["national_calendar", "diocesan_calendar"],
+  "required_relations": { "*": ["admin", "editor", "viewer"] }
+}
