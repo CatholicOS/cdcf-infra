@@ -37,13 +37,13 @@
 **Interfaces:**
 - Produces three answers: (a) does `/usr/local/bin/grpc_health_probe` exist in the image, (b) does OpenFGA still refuse to start with the Playground enabled alongside preshared auth, (c) are `OPENFGA_AUTHN_METHOD` / `OPENFGA_AUTHN_PRESHARED_KEYS` still honoured. Tasks 2-5 assume (a) and (c) hold; Task 3 acts on (b).
 
-- [ ] **Step 1: Pull the image**
+- [x] **Step 1: Pull the image**
 
 ```bash
 docker pull openfga/openfga:v1.18.2
 ```
 
-- [ ] **Step 2: (a) Healthcheck binary**
+- [x] **Step 2: (a) Healthcheck binary**
 
 Both `cdcf-infra/auth/docker-compose.prod.yml` and `martyrology-api/docker-compose.yml` healthcheck with `/usr/local/bin/grpc_health_probe`. Confirm it is still there:
 
@@ -53,7 +53,7 @@ docker run --rm --entrypoint ls openfga/openfga:v1.18.2 -l /usr/local/bin/grpc_h
 
 Expected: the file listed. **If it is missing**, stop and revise every affected healthcheck to `["CMD", "/usr/local/bin/openfga", "health"]` or an HTTP probe against `/healthz` before continuing — and record the change in this plan.
 
-- [ ] **Step 3: (c) Preshared auth still honoured**
+- [x] **Step 3: (c) Preshared auth still honoured**
 
 ```bash
 docker run --rm -d --name fga-1182 -p 127.0.0.1:18081:8080 \
@@ -67,7 +67,7 @@ echo -n "with token: "; curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorizati
 
 Expected: `401` without the token, `200` with it.
 
-- [ ] **Step 4: (b) Playground + preshared behaviour**
+- [x] **Step 4: (b) Playground + preshared behaviour**
 
 `martyrology-api/docker-compose.yml:141-145` documents that v1.15.1 panics at startup when the Playground is enabled alongside preshared auth. Re-test at 1.18.2:
 
@@ -92,28 +92,43 @@ reads its output; if it starts successfully instead (behaviour changed), the
 
 Expected (if unchanged): a startup error mentioning that the playground only supports authn method 'none'. Record which it is — Task 3 updates martyrology's comment only if the behaviour changed.
 
-- [ ] **Step 5: Confirm the migrate command no-ops against an up-to-date schema**
+- [x] **Step 5: Confirm the migrate command no-ops against an up-to-date schema**
 
 ```bash
+set -euo pipefail
 docker network create fga-upgrade-test 2>/dev/null || true
 docker run --rm -d --name fga-pg-db --network fga-upgrade-test \
   -e POSTGRES_PASSWORD=pw -e POSTGRES_USER=openfga -e POSTGRES_DB=openfga postgres:16
-sleep 8
+for i in $(seq 1 30); do
+  docker exec fga-pg-db pg_isready -U openfga -d openfga -h localhost && break
+  if [ "$i" -eq 30 ]; then
+    echo "fga-pg-db never became ready" >&2
+    exit 1
+  fi
+  sleep 1
+done
 docker run --rm --network fga-upgrade-test openfga/openfga:v1.15.1 migrate \
   --datastore-engine postgres --datastore-uri 'postgres://openfga:pw@fga-pg-db:5432/openfga?sslmode=disable'
 docker run --rm --network fga-upgrade-test openfga/openfga:v1.18.2 migrate \
   --datastore-engine postgres --datastore-uri 'postgres://openfga:pw@fga-pg-db:5432/openfga?sslmode=disable'
 ```
 
+`set -euo pipefail` makes the block abort on the first failing command, so a
+failed v1.15.1 migrate can no longer be masked by a v1.18.2 migrate that
+"succeeds" by migrating an untouched database from scratch. The loop polls
+`pg_isready` against the `openfga` role/database (bounded to 30 attempts)
+instead of a fixed `sleep`, so the migrate commands only run once Postgres is
+actually accepting connections.
+
 Expected: the second run reports the database is already at the target version and applies nothing. This is the empirical confirmation of the "migration-free" claim that the rest of the plan rests on.
 
-- [ ] **Step 6: Clean up**
+- [x] **Step 6: Clean up**
 
 ```bash
 docker rm -f fga-pg-db fga-1182 fga-pg 2>/dev/null; docker network rm fga-upgrade-test 2>/dev/null; true
 ```
 
-- [ ] **Step 7: Record findings**
+- [x] **Step 7: Record findings**
 
 Append a short findings block to this plan file under Task 1 (binary present yes/no, playground behaviour, migrate no-op confirmed) and commit:
 
@@ -121,6 +136,15 @@ Append a short findings block to this plan file under Task 1 (binary present yes
 git add docs/superpowers/plans/2026-08-04-openfga-1182-upgrade.md
 git commit -m "Record OpenFGA 1.18.2 image verification findings"
 ```
+
+**Findings (v1.18.2, verified against isolated local-only containers, no production access):**
+- (a) Healthcheck binary: **present** — `/usr/local/bin/grpc_health_probe` exists in the image (confirmed via `docker cp`, 14 MB, mode 0555, and by invoking it directly, which returned its usual `-addr not specified` usage error rather than "not found"). No compose healthchecks need rewriting.
+- (b) Playground + preshared auth: **unchanged** — still panics at startup with `panic: the playground only supports authn method 'none'`, identical to the documented v1.15.1 behaviour. `martyrology-api/docker-compose.yml:141-145`'s comment stays accurate; Task 3 need not change it.
+- (c) Preshared auth: **still honoured** — `/stores` returned `401` with no token and `200` with `Authorization: Bearer test-key`.
+- Migrate no-op: **confirmed empirically** — a fresh Postgres 16 database was migrated with `openfga/openfga:v1.15.1 migrate` (applied goose versions 0–6), then `openfga/openfga:v1.18.2 migrate` was run against that same database; the `goose_db_version` table shows no rows added by the second run (all 7 rows timestamped from the v1.15.1 run only). The "no Postgres migration between 1.15.1 and 1.18.2" claim holds.
+- MySQL warning: not applicable — no MySQL datastore was touched or exercised in this task, consistent with every deployment in scope using Postgres.
+
+Full command transcripts: `.superpowers/sdd/2026-08-04-openfga-1182-upgrade/task-1-report.md`.
 
 ---
 
