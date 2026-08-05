@@ -604,8 +604,8 @@ before the file it points at exists on `development`, or every
 model-touching PR fails on a fetch error (exit 2) and `main` goes red.
 PR #29 therefore shipped the registry empty — a state the validator reports
 as a genuine pass — and the entry landed only after
-Liturgical-Calendar/LiturgicalCalendarAPI#757 merged on 2026-08-06. See
-`auth/models/consumers.README.md`.
+Liturgical-Calendar/LiturgicalCalendarAPI#757 merged at 2026-08-05T22:24Z.
+See `auth/models/consumers.README.md`.
 
 Martyrology is deliberately absent until `martyrology-api` declares expectations — an empty contract is honest; a fabricated one is not.
 
