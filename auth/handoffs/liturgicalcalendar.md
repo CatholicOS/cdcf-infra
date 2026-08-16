@@ -42,6 +42,8 @@ Everything in this Zitadel section was re-verified against production on 2026-08
 
   Both `test_definition` and the `deleter` relation are **gone** — dropped by the LitCal team in `ea6fdd6c` ("drop test_definition type") and `76033bfb` ("admin-superset model … drop deleter"), with the calendar-scoped test types added in `2060b19a`. Both are gone from the current (latest) model only; a consumer still pinned to an earlier model ID (e.g. `01KRSCF4K9W2EWZ1X2PP1QVH3B`) still sees them, since a pin names a specific model ID and that model still exists in the store's history.
 
+  **Not yet deployed:** `rite_calendar_test` was added to the model *file* (relations `admin`/`editor`/`viewer`, identical to `general_roman_calendar_test`, which it generalises — its object id is the bare rite, e.g. `rite_calendar_test:roman`). The list above deliberately still describes model `01KW4FW2ZCT1E693PY8D9TJEFM`, which does **not** contain it. It becomes deployed only when an operator runs `./setup-openfga.sh --target production --create-litcal-store` in `/opt/cdcf-auth/auth` and the resulting model ID lands in `LiturgicalCalendar.lock.json` via a follow-up PR; update both this list and the model ID above at that point.
+
 ## Out-of-band (delivered separately, not in this repo)
 
 - **`OPENFGA_PRESHARED_KEY`** — Bearer token for OpenFGA HTTP API authn. Required for LitCal's app to read/write tuples and run authz checks.
