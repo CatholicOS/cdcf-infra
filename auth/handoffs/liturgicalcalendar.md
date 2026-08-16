@@ -37,12 +37,16 @@ Everything in this Zitadel section was re-verified against production on 2026-08
 - **API URL**: `https://authz.catholicdigitalcommons.org`
 - **Store name**: `LiturgicalCalendar`
 - **Store ID**: `01KRSCF4GVX0X4ZNXXJQEC4XXJ`
-- **Authorization model ID**: `01KW4FW2ZCT1E693PY8D9TJEFM` — the latest model in the store, uploaded 2026-06-27T12:11Z. Supersedes `01KW40P7AM87W4Y864D2RZDR0B` (same day, 07:46Z) and `01KRSCF4K9W2EWZ1X2PP1QVH3B` (the original 2026-05-16 upload this handoff used to record).
-- **Model source**: `cdcf-infra/auth/models/LiturgicalCalendar.json` — this repo owns it as of 2026-08-04; the copy in `LiturgicalCalendarAPI` was removed. Schema 1.1. Deployed types: `user`, `wider_region`, `national_calendar`, `diocesan_calendar`, `general_roman_calendar`, `national_calendar_test`, `diocesan_calendar_test`, `general_roman_calendar_test`; relations `admin`/`editor`/`viewer` throughout, plus `member_nation` on `wider_region`. The current model ID is recorded in `auth/models/LiturgicalCalendar.lock.json`.
+- **Authorization model ID**: `01M05SBDS2F7EQFGRW7D997S6K` — the latest model in the store, uploaded 2026-08-16T17:19Z. Supersedes `01KW4FW2ZCT1E693PY8D9TJEFM` (2026-06-27T12:11Z), `01KW40P7AM87W4Y864D2RZDR0B` (same day, 07:46Z) and `01KRSCF4K9W2EWZ1X2PP1QVH3B` (the original 2026-05-16 upload this handoff used to record).
+- **Model source**: `cdcf-infra/auth/models/LiturgicalCalendar.json` — this repo owns it as of 2026-08-04; the copy in `LiturgicalCalendarAPI` was removed. Schema 1.1. Deployed types: `user`, `wider_region`, `national_calendar`, `diocesan_calendar`, `general_roman_calendar`, `national_calendar_test`, `diocesan_calendar_test`, `general_roman_calendar_test`, `rite_calendar_test`; relations `admin`/`editor`/`viewer` throughout, plus `member_nation` on `wider_region`. The current model ID is recorded in `auth/models/LiturgicalCalendar.lock.json`.
 
   Both `test_definition` and the `deleter` relation are **gone** — dropped by the LitCal team in `ea6fdd6c` ("drop test_definition type") and `76033bfb` ("admin-superset model … drop deleter"), with the calendar-scoped test types added in `2060b19a`. Both are gone from the current (latest) model only; a consumer still pinned to an earlier model ID (e.g. `01KRSCF4K9W2EWZ1X2PP1QVH3B`) still sees them, since a pin names a specific model ID and that model still exists in the store's history.
 
-  **Not yet deployed:** `rite_calendar_test` was added to the model *file* (relations `admin`/`editor`/`viewer`, identical to `general_roman_calendar_test`, which it generalises — its object id is the bare rite, e.g. `rite_calendar_test:roman`). The list above deliberately still describes model `01KW4FW2ZCT1E693PY8D9TJEFM`, which does **not** contain it. It becomes deployed only when an operator runs `./setup-openfga.sh --target production --create-litcal-store` in `/opt/cdcf-auth/auth` and the resulting model ID lands in `LiturgicalCalendar.lock.json` via a follow-up PR; update both this list and the model ID above at that point.
+  `rite_calendar_test` (relations `admin`/`editor`/`viewer`, identical to `general_roman_calendar_test`, which it generalises — its object id is the bare rite, e.g. `rite_calendar_test:roman`) is **deployed** as of model `01M05SBDS2F7EQFGRW7D997S6K`. It is purely additive: `general_roman_calendar_test` is untouched, so pre-migration tuples on it keep authorizing until `scripts/migrate-rite-test-tuples.php --apply --prune` has run in every environment.
+
+  Consumers pinning `OPENFGA_MODEL_ID` do **not** pick this up by redeploying — a pin names a specific model ID, so they keep resolving against whatever they pinned until the value below is updated.
+
+  Local dev and frontend-e2e stores refresh themselves; there is no manual model upload to perform. `LiturgicalCalendarFrontend`'s `authz-seed` service clones this repo at `CDCF_INFRA_REF` (default `main`), writes its own `.env.local`, and runs `./setup-openfga.sh --target local --create-litcal-store` — so bringing the stack up again once the change is on `main` is what picks it up. Those stores get a **new model ID of their own**; the lock guard does not fire against them, because a lock scoped to the production store is `foreign` to a local one and is bypassed. Re-pin `OPENFGA_STORE_ID`/`OPENFGA_MODEL_ID` in that stack from *its* IDs, never from the production values above — model IDs are meaningless across stores.
 
 ## Out-of-band (delivered separately, not in this repo)
 
@@ -61,7 +65,7 @@ ZITADEL_CLIENT_ID=373246751403933699        # ← the API Backend client_id (aud
 
 OPENFGA_API_URL=https://authz.catholicdigitalcommons.org
 OPENFGA_STORE_ID=01KRSCF4GVX0X4ZNXXJQEC4XXJ
-OPENFGA_MODEL_ID=01KW4FW2ZCT1E693PY8D9TJEFM   # ← latest as of 2026-08-04; was 01KRSCF4K9W2EWZ1X2PP1QVH3B
+OPENFGA_MODEL_ID=01M05SBDS2F7EQFGRW7D997S6K   # ← latest as of 2026-08-16; was 01KW4FW2ZCT1E693PY8D9TJEFM
 # OPENFGA_PRESHARED_KEY=<out-of-band>
 ```
 
