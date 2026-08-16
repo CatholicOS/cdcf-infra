@@ -39,7 +39,14 @@
 #   refused to overwrite a deployed model (upload_model_if_changed only — no
 #   other site uses this code), 8 duplicate store names, 9 the OpenFGA API
 #   failed (transport error, non-2xx, or a malformed/stalled/capped response
-#   body) — never a verdict about state, 64 usage.
+#   body, including a 2xx whose body still carries an error) — never a verdict
+#   about state, 64 usage, 70 an internal invariant of this script did not hold
+#   (sysexits EX_SOFTWARE — a bug here, not a state an operator can provoke).
+#
+# 7 and 9 answer different questions and call for opposite responses, which is
+# why nothing else may borrow 7: 7 says "a deployed model diverged from this
+# repo — investigate before doing anything", while 9 says only "the call did not
+# succeed" and asserts nothing about what the store now holds.
 #
 # Usage:
 #   ./setup-openfga.sh --target production --create-litcal-store
@@ -161,6 +168,13 @@ err()  { echo "${R}    ✗${N} $*" >&2; }
 # Distinct from the domain codes (3 store, 5 model, 6 tuples, 7 guard, 8
 # ambiguous store) so a transport/HTTP failure is never mistaken for a verdict.
 EXIT_API=9
+
+# Exit code for "this script's own invariant did not hold". Not a condition of
+# the store and not something an operator can provoke — it means the code is
+# wrong. 70 is sysexits.h's EX_SOFTWARE, chosen to match the 64 (EX_USAGE) this
+# script already exits with on bad arguments rather than inventing a code in the
+# domain range, where it would read as one more operational outcome.
+EXIT_INTERNAL=70
 
 # fga METHOD PATH [BODY_JSON] -> response body on stdout; non-zero on failure.
 #
@@ -687,13 +701,21 @@ seed_tuples_if_present() {
             if ! echo "$result" | jq -e . >/dev/null 2>&1 \
                || [[ -n "$(echo "$result" | jq -r '.code // .message // empty')" ]]; then
                 err "Tuple write rejected by OpenFGA: $result"
-                exit 7
+                exit "$EXIT_API"
             fi
             written=$((written + $(echo "$missing_json" | jq --argjson s "$i" --argjson c "$TUPLE_WRITE_CHUNK" '.[$s : $s + $c] | length')))
         done
+        # Unreachable by construction: the loop's only early exits are the two
+        # aborts above, and `written` accumulates the same jq slice lengths that
+        # the loop bounds iterate over, so completing the loop means
+        # written == missing_count. Kept as an assertion because the arithmetic
+        # is the thing guaranteeing a partial seed can never be reported as a
+        # success, and that guarantee should fail loudly if the arithmetic is
+        # ever changed. Hence EXIT_INTERNAL, not a store-state code.
         if [[ "$written" -ne "$missing_count" ]]; then
             err "Wrote ${written} tuple(s) but ${missing_count} were missing — refusing to report success"
-            exit 7
+            err "This is a bug in $(basename "${BASH_SOURCE[0]}"), not a condition of the store."
+            exit "$EXIT_INTERNAL"
         fi
         ok "Wrote ${written} new structural tuple(s) (${desired_count} declared in file)"
     fi
