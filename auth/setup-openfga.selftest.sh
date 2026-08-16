@@ -48,10 +48,16 @@ fi
 PASSES=0
 FAILURES=0
 
-command -v python3 >/dev/null 2>&1 || {
-    echo "${R}[selftest] python3 is required for the stub OpenFGA.${N}" >&2
-    exit 1
-}
+# Preflight: the harness has its own tool needs, separate from the script under
+# test. Missing any of them would surface as cases failing on their assertions,
+# which reads as "setup-openfga.sh is broken" — the one conclusion this script
+# exists to make trustworthy. Fail up front and say which tool instead.
+for tool in python3:"the stub OpenFGA" jq:"writing lock fixtures" curl:"probing the stub"; do
+    command -v "${tool%%:*}" >/dev/null 2>&1 || {
+        echo "${R}[selftest] ${tool%%:*} is required (${tool#*:}).${N}" >&2
+        exit 1
+    }
+done
 [[ -f "$TARGET" ]] || { echo "${R}[selftest] not found: $TARGET${N}" >&2; exit 1; }
 
 SANDBOX="$(mktemp -d)"
@@ -344,13 +350,13 @@ expect 9 "Unexpected body" models-malformed \
     "a null authorization_models is malformed, not an empty list" -- \
     --target local --create-store TestStore
 
-expect 8 "" dup-stores \
+expect 8 "Found 2 stores named" dup-stores \
     "two stores sharing a name is exit 8, not a silent pick" -- \
     --target local --create-store TestStore
 
 echo "${B}[selftest]${N} --- pre-flight and usage exits ---"
 
-expect 3 "" no-stores \
+expect 3 "Store not found:" no-stores \
     "--seed-tuples against a store that does not exist is exit 3" -- \
     --target local --seed-tuples TestStore
 
