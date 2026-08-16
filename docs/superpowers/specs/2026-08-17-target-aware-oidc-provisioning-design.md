@@ -3,6 +3,7 @@
 **Date:** 2026-08-17
 **Repos touched:** `cdcf-infra`, `LiturgicalCalendarFrontend` (staging deploy only)
 **Issue:** #20
+**Depends on:** a local Zitadel stack in `cdcf-website` — designed and built **before** this (see §2.4)
 **Status:** design, pending implementation plan
 
 ---
@@ -32,7 +33,7 @@ CDCF already implements this pattern (`CDCF Website` / `CDCF Website (Non-Prod)`
 | Action | `--target local` | `--target staging` | `--target production` |
 | --- | --- | --- | --- |
 | `--provision-litcal-frontend` | **skip + warn** | app `LiturgicalCalendarFrontend (Staging)` *(new)*, `litcal-staging.johnromanodorazio.com`, devMode=false | app `LiturgicalCalendarFrontend` *(existing)*, `litcal.johnromanodorazio.com`, devMode=false |
-| `--provision-cdcf-website` | app `CDCF Website`, `http://localhost:3000`, devMode=true | app `CDCF Website (Non-Prod)`, `staging.catholicdigitalcommons.org` **+ `http://localhost:3000`** (gated, see 2.4) | app `CDCF Website`, `catholicdigitalcommons.org`, devMode=false |
+| `--provision-cdcf-website` | app `CDCF Website`, `http://localhost:3000`, devMode=true | app `CDCF Website (Non-Prod)`, `staging.catholicdigitalcommons.org` *(localhost removed — see §2.4)* | app `CDCF Website`, `catholicdigitalcommons.org`, devMode=false |
 | `--provision-martyrology-frontend` | `http://localhost:3000`, devMode=true *(unchanged)* | **skip + warn** *(unchanged)* | `romanmartyrology.com` *(unchanged)* |
 
 Callback paths are unchanged and remain per-property (`/auth/callback.php` for LitCal, `/api/auth/callback/zitadel` for CDCF and Martyrology).
@@ -60,15 +61,15 @@ This is the behaviour change most likely to surprise an operator and must be doc
 
 `--all` on any target also re-runs the non-URL actions (`--create-orgs`, `--rename-bootstrap-admin`, `--provision-litcal`, `--provision-martyrology`). They are idempotent and target-agnostic, so this is harmless. Per the issue's acceptance, **the API-type actions are not touched**: `create_oidc_api_app` registers no URIs, so the distinction that matters is URL-bearing vs not, never frontend vs backend.
 
-### 2.4 CDCF's localhost client: agreed end state, gated removal
+### 2.4 CDCF's localhost client: removed, once its replacement exists
 
-`CDCF_FRONTEND_NONPROD_URLS` registers `http://localhost:3000` in the **production** Zitadel. This contradicts `CatholicOS/martyrology-api#26`, which settled that local development happens against a separate local Zitadel rather than a localhost client in the production instance — which is why LitCal and Martyrology have none. It is drift predating that decision.
+`CDCF_FRONTEND_NONPROD_URLS` registers `http://localhost:3000` in the **production** Zitadel. This contradicts `CatholicOS/martyrology-api#26`, which settled that local development happens against a separate local Zitadel rather than a localhost client in the production instance — which is why LitCal and Martyrology have none. It is drift predating that decision, and this design removes it.
 
-**It is nonetheless retained by this design**, because the prerequisite for removing it does not exist: `cdcf-website` has no local Zitadel (no `zitadel` service in its compose; only `docs/zitadel-oidc-plan.md`). Removing the localhost origin would not relocate that capability, it would delete it, leaving CDCF developers with no local OIDC login.
+Removal has a prerequisite that does not exist yet: `cdcf-website` has no local Zitadel (no `zitadel` service in its compose; only `docs/zitadel-oidc-plan.md`). Dropping the localhost origin before that stack exists would not relocate the capability, it would delete it, leaving CDCF developers with no local OIDC login at all.
 
-The policy therefore defines CDCF's `local` origins so the path exists the moment a local stack does, and the retention is marked in-file with a comment naming the prerequisite and a follow-up issue. The agreed end state is recorded where the next person changes this code, not only in a closed issue.
+**That stack is therefore built first, as its own piece of work with its own design** — a different repo and a different subsystem, with `martyrology-api`'s compose as the closest template. This spec depends on it. Implementing #20 before it exists reintroduces exactly the gap described above.
 
-**Consequence: this design changes no registered URI anywhere.** CDCF's production app already carries only the production origin; its non-prod app keeps exactly the set it has today. The only live change in the whole design is LitCal's split (§4).
+**Consequence for live state:** CDCF's production app is untouched (it already carries only the production origin), but its **non-prod app loses `http://localhost:3000`** on the first `--target staging` run after this lands. That is a real change to the production Zitadel, sequenced in §4.
 
 ## 3. Code shape
 
@@ -90,7 +91,21 @@ Per-action data, shared behaviour. The data stays beside the comments explaining
 
 ## 4. Migration
 
-Only LitCal touches live state. **Production sign-in is never at risk**: the existing app remains the production app, keeping client_id `373289176235245570` and its own origin throughout. Only staging moves.
+Two properties touch live state: LitCal (the app split) and CDCF (losing its localhost origin). Martyrology needs no migration.
+
+### 4.1 CDCF
+
+Strictly ordered, because the removal is what makes local dev impossible if it lands early:
+
+1. The `cdcf-website` local Zitadel stack exists and is working (§2.4's prerequisite).
+2. CDCF website developers move onto it — verified, not assumed.
+3. Only then `--provision-cdcf-website --target staging`, which replaces the non-prod app's URI set and thereby drops `http://localhost:3000`.
+
+The production app is never touched by this sequence.
+
+### 4.2 LitCal
+
+**Production sign-in is never at risk**: the existing app remains the production app, keeping client_id `373289176235245570` and its own origin throughout. Only staging moves.
 
 1. Land the code.
 2. `--provision-litcal-frontend --target staging` — creates `LiturgicalCalendarFrontend (Staging)`, emits a new client_id.
@@ -115,14 +130,14 @@ Cases, at minimum:
 
 Both `auth/setup-zitadel.sh` and the new selftest are added to `.github/workflows/validate-models.yml`'s path filters and a step, as `setup-openfga` already is.
 
-The selftest is likely larger than the change itself. If it needs trimming, the scoping lever is to assert only the resolved matrix (app name / origins / devMode per target) without exercising the API payloads — cheaper, still pins §2.1, but blind to a regression in how the payload reaches `UpdateApplication`. Taking that lever should be a recorded decision, not a silent omission.
+The selftest is likely larger than the change itself. It is still the full version rather than a matrix-only check, decided deliberately: asserting the resolved variables alone would pin §2.1's origin lists going in, but stay blind to how they are serialized — a callback path appended to the post-logout URIs, an empty set emitted as `null` instead of `[]`, or the update branch sending the wrong payload. That update branch is exactly where the production-callback-stripping risk lives, so it is the last thing to leave untested. The `setup-openfga.selftest.sh` harness already merged makes the marginal cost small.
 
 ## 6. Acceptance (issue #20)
 
 | Required | Where |
 | --- | --- |
 | Written decision, case 1 (`--all` on a local target) | §2.3 — skip + warn, one behaviour whether swept or named explicitly |
-| Written decision, case 2 (CDCF's localhost client) | §2.4 — drift, end state agreed, removal gated on a prerequisite |
+| Written decision, case 2 (CDCF's localhost client) | §2.4 — drift; removed, after its prerequisite stack is built first |
 | Written decision, case 3 (API actions stay target-agnostic) | §2.3 — untouched; URL-bearing vs not is the distinction |
 | Written decision, case 4 (is a prod URL in a local Zitadel harmful?) | §1 — confusion for `local`; the damaging direction is `staging`, and §2 removes it structurally |
 | Applies consistently across all three URL-bearing actions | §2.1, with §2.2 recording LitCal's `local` asymmetry and why it is about ownership |
@@ -131,6 +146,6 @@ The selftest is likely larger than the change itself. If it needs trimming, the 
 
 ## 7. Out of scope
 
-- Removing CDCF's localhost client (§2.4) — needs a local Zitadel in `cdcf-website` first; follow-up issue.
+- Building the `cdcf-website` local Zitadel stack. It is a **dependency** of this spec (§2.4), not part of it: different repo, different subsystem, its own design.
 - A staging origin for Martyrology — none exists; `:795-797` already records that it must land as a distinctly-named app.
 - Reconciling LitCal's two local provisioners (§2.2). Noted, not fixed.
