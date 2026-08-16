@@ -44,7 +44,9 @@ Everything in this Zitadel section was re-verified against production on 2026-08
 
   `rite_calendar_test` (relations `admin`/`editor`/`viewer`, identical to `general_roman_calendar_test`, which it generalises — its object id is the bare rite, e.g. `rite_calendar_test:roman`) is **deployed** as of model `01M05SBDS2F7EQFGRW7D997S6K`. It is purely additive: `general_roman_calendar_test` is untouched, so pre-migration tuples on it keep authorizing until `scripts/migrate-rite-test-tuples.php --apply --prune` has run in every environment.
 
-  Consumers pinning `OPENFGA_MODEL_ID` do **not** pick this up by redeploying — a pin names a specific model ID, so they keep resolving against whatever they pinned until the value below is updated. Local dev and frontend-e2e stores need `./setup-openfga.sh --target local` re-run against a current clone.
+  Consumers pinning `OPENFGA_MODEL_ID` do **not** pick this up by redeploying — a pin names a specific model ID, so they keep resolving against whatever they pinned until the value below is updated.
+
+  Local dev and frontend-e2e stores refresh themselves; there is no manual model upload to perform. `LiturgicalCalendarFrontend`'s `authz-seed` service clones this repo at `CDCF_INFRA_REF` (default `main`), writes its own `.env.local`, and runs `./setup-openfga.sh --target local --create-litcal-store` — so bringing the stack up again once the change is on `main` is what picks it up. Those stores get a **new model ID of their own**; the lock guard does not fire against them, because a lock scoped to the production store is `foreign` to a local one and is bypassed. Re-pin `OPENFGA_STORE_ID`/`OPENFGA_MODEL_ID` in that stack from *its* IDs, never from the production values above — model IDs are meaningless across stores.
 
 ## Out-of-band (delivered separately, not in this repo)
 
