@@ -12,15 +12,25 @@ name: Validate model expectations
 # public raw.githubusercontent.com URL, and jq/curl are preinstalled on the
 # ubuntu-latest runner.
 #
-# Two steps, not one, because they cover different things. The registry step
+# Three steps, not one, because they cover different things. The registry step
 # is the actual enforcement, and now that LiturgicalCalendarAPI is registered
 # it does exercise the walk against a real model. It still is not sufficient
 # on its own: it covers only the rules that one consumer happens to declare
 # and only the outcome "satisfied", so the schema rejections, the wildcard
 # scope split, and the TTU/intersection/difference boundaries would all ship
-# green if they regressed. The self-test step runs the fixtures under
+# green if they regressed. The validator self-test runs the fixtures under
 # auth/models/testdata/ and asserts each one's exact exit code, including the
 # ones that must fail, so those paths are exercised on every run.
+#
+# The third step covers auth/setup-openfga.sh, which is not a model check at
+# all — this job is where it lives because it is the only place this repo's
+# auth/ scripts are gated, and a second workflow for one script would just
+# split the same concern across two red X's. Its exit codes are an
+# operator-facing contract (7 = a deployed model diverged, investigate; 9 = the
+# call failed and says nothing about state) that had no coverage whatsoever
+# until issue #27, where the header's own claim about exit 7 had gone stale
+# against the code. Note the job name predates that step; if this grows further,
+# splitting it out is the right move.
 #
 # The registry step also depends on a network fetch from raw.githubusercontent
 # per registered consumer, so it can fail for reasons unrelated to the commit
@@ -38,6 +48,8 @@ on:
       - 'auth/models/**'
       - 'auth/validate-expectations.sh'
       - 'auth/validate-expectations.selftest.sh'
+      - 'auth/setup-openfga.sh'
+      - 'auth/setup-openfga.selftest.sh'
       - '.github/workflows/validate-models.yml'
   push:
     branches:
@@ -46,6 +58,8 @@ on:
       - 'auth/models/**'
       - 'auth/validate-expectations.sh'
       - 'auth/validate-expectations.selftest.sh'
+      - 'auth/setup-openfga.sh'
+      - 'auth/setup-openfga.selftest.sh'
       - '.github/workflows/validate-models.yml'
   merge_group:
     types: [checks_requested]
@@ -73,6 +87,16 @@ jobs:
       # failure than whatever it then reports about the registry.
       - name: Self-test the validator against its fixtures
         run: ./auth/validate-expectations.selftest.sh
+
+      # setup-openfga.sh's exit codes are an operator-facing contract — 7 says
+      # "a deployed model diverged, investigate before touching anything", 9
+      # says only "the call failed, this asserts nothing about the store" — and
+      # nothing enforced it until now, so it drifted: the header claimed 7 was
+      # the lock guard's alone while two tuple-seeding sites also exited 7
+      # (issue #27). This runs a copy of the script against a stub OpenFGA, so
+      # the failures that need a misbehaving server are reachable at all.
+      - name: Self-test setup-openfga's exit-code contract
+        run: ./auth/setup-openfga.selftest.sh
 
       - name: Validate models against consumer expectations
         run: ./auth/validate-expectations.sh
