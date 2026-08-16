@@ -1,1 +1,7 @@
-[]
+[
+  {
+    "consumer": "LiturgicalCalendarAPI",
+    "store": "LiturgicalCalendar",
+    "expectations_url": "https://raw.githubusercontent.com/Liturgical-Calendar/LiturgicalCalendarAPI/development/authz/openfga-expectations.json"
+  }
+]

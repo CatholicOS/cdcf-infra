@@ -584,7 +584,7 @@ Expected: non-zero, with a separate line per violated rule naming the type/relat
 
 Expected: `exit=0`.
 
-- [ ] **Step 6: Create the registry**
+- [x] **Step 6: Create the registry**
 
 `auth/models/consumers.json`:
 
@@ -597,6 +597,15 @@ Expected: `exit=0`.
   }
 ]
 ```
+
+**Shipped empty (`[]`) instead, on purpose.** This step and Task 8 have an
+ordering dependency the plan stated backwards: the entry above cannot land
+before the file it points at exists on `development`, or every
+model-touching PR fails on a fetch error (exit 2) and `main` goes red.
+PR #29 therefore shipped the registry empty — a state the validator reports
+as a genuine pass — and the entry landed only after
+Liturgical-Calendar/LiturgicalCalendarAPI#757 merged at 2026-08-05T22:24Z.
+See `auth/models/consumers.README.md`.
 
 Martyrology is deliberately absent until `martyrology-api` declares expectations — an empty contract is honest; a fabricated one is not.
 
@@ -654,21 +663,21 @@ git commit -m "Fail model PRs that break a consumer's declared expectations"
 - Modify: `phpunit_tests/Services/OpenFgaModelTest.php`
 
 **Interfaces:**
-- Consumes: the schema from Task 6. The file this task creates is what `auth/models/consumers.json` already points at, so Task 6's registry entry goes live when this merges.
+- Consumes: the schema from Task 6. ~~The file this task creates is what `auth/models/consumers.json` already points at, so Task 6's registry entry goes live when this merges.~~ Inverted in practice — see Task 6 Step 6: the registry shipped empty, and registering this consumer was a follow-up PR in cdcf-infra *after* this one merged, not something that went live automatically.
 
-- [ ] **Step 1: Write the expectations file**
+- [x] **Step 1: Write the expectations file**
 
 Encode exactly the invariants the test asserts today — no `deleter` anywhere, no `test_definition`, `editor`/`viewer` unions including `admin`, `member_nation` on `wider_region`, and the eight deployed types. Do not add aspirational expectations: this file is a contract another repo's CI enforces, so every line is a constraint someone else must keep satisfying.
 
-- [ ] **Step 2: Repoint the test at the file**
+- [x] **Step 2: Repoint the test at the file**
 
 `OpenFgaModelTest` keeps fetching the model from the seeded store, but derives its assertions from `authz/openfga-expectations.json` rather than hardcoding them, so the consumer test and the provider check cannot disagree. Keep the `markTestSkipped` behaviour when no store is configured.
 
-- [ ] **Step 3: Prove both directions**
+- [x] **Step 3: Prove both directions**
 
 Run the suite against the seeded store and show the test executing and passing. Then temporarily add a bogus `required_types` entry to the expectations file, re-run, and show the test **failing** — a contract test that cannot fail is decoration. Restore the file.
 
-- [ ] **Step 4: Commit and open the PR against `development`**
+- [x] **Step 4: Commit and open the PR against `development`**
 
 Do not merge. The PR body should state that `cdcf-infra`'s CI reads this file, so changes to it change what that repo is allowed to ship.
 
