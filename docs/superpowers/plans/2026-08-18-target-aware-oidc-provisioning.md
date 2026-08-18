@@ -193,7 +193,7 @@ Its `case "$TARGET"` block at `:799` already matches the required shape — leav
 
 Add per-target lines for the three actions (precedent at `:99`), plus:
 
-```
+```text
 Targets and sweeps:
   A target provisions ONE app per property, not every app. --all --target
   production creates the production apps; --all --target staging creates the

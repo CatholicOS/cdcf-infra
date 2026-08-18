@@ -81,14 +81,35 @@ done
 cat > "$SANDBOX/stub.py" <<'PYEOF'
 """Stub Zitadel. Serves only what setup-zitadel.sh calls.
 
-Always reports zero existing applications, so every run takes the
-CreateApplication path and the script prints the origins it registered —
-which is what the selftest asserts against.
+Records every request body to $STUB_LOG as one JSON object per line, so cases
+can assert on the PAYLOAD the script actually sent rather than only on what it
+printed. The two differ in the way that matters: the handoff block is echoed
+from shell variables, while redirectUris/postLogoutRedirectUris are assembled
+separately by jq — an assertion on stdout alone would not catch a payload that
+disagreed with the echo.
+
+$STUB_EXISTING file holds one app name per line that ListApplications should
+report as already present. It is read PER REQUEST, not at startup, so a single
+long-lived stub can serve cases that disagree about what already exists.
+Declaring an app flips the script from the CreateApplication path to the
+UpdateApplication path, which is where the replace-semantics live:
+UpdateApplication sends the WHOLE redirectUris array, so it is the call that can
+strip a production callback off an existing app.
 """
-import json, sys
+import json, os, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 ORGS = ["CDCF", "LiturgicalCalendar", "BibleGet", "OntoKit", "Martyrology"]
+LOG = os.environ.get("STUB_LOG", "")
+EXISTING_FILE = os.environ.get("STUB_EXISTING", "")
+
+
+def existing_apps():
+    try:
+        with open(EXISTING_FILE) as fh:
+            return [l.strip() for l in fh if l.strip()]
+    except OSError:
+        return []
 
 
 class H(BaseHTTPRequestHandler):
@@ -105,8 +126,11 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
-        self.rfile.read(n)
+        raw = self.rfile.read(n).decode() if n else ""
         p = self.path
+        if LOG:
+            with open(LOG, "a") as fh:
+                fh.write(json.dumps({"path": p, "body": raw}) + "\n")
         if p.endswith("/ListOrganizations"):
             return self._send(200, {"result": [
                 {"id": f"org-{i}", "name": name} for i, name in enumerate(ORGS)]})
@@ -123,7 +147,17 @@ class H(BaseHTTPRequestHandler):
         if p.endswith("/AddProjectRole"):
             return self._send(200, {"creationDate": "2026-08-18T00:00:00Z"})
         if p.endswith("/ListApplications"):
-            # Always "no such app yet" -> CreateApplication path.
+            # Report an app as existing only when the case declared it, so the
+            # same stub covers both the create and the update path.
+            try:
+                name = json.loads(raw)["filters"][1]["name_filter"]["name"]
+            except Exception:
+                name = None
+            if name in existing_apps():
+                return self._send(200, {"applications": [{
+                    "id": "app-existing",
+                    "oidcConfiguration": {"clientId": "client-existing"},
+                }]})
             return self._send(200, {"applications": []})
         if p.endswith("/CreateApplication"):
             # Both shapes: the script reads oidcConfiguration.* for Web apps
@@ -154,8 +188,13 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PYEOF
 
+REQ_LOG="$SANDBOX/requests.jsonl"
+EXISTING_FILE="$SANDBOX/existing_apps"
+: > "$EXISTING_FILE"
+
 start_stub() {
-    python3 "$SANDBOX/stub.py" "$PORT" >"$SANDBOX/stub.log" 2>&1 &
+    STUB_LOG="$REQ_LOG" STUB_EXISTING="$EXISTING_FILE" \
+        python3 "$SANDBOX/stub.py" "$PORT" >"$SANDBOX/stub.log" 2>&1 &
     STUB_PID=$!
     local i
     for i in $(seq 1 50); do
@@ -195,6 +234,69 @@ expect() {
         echo "$out" | sed 's/^/        | /'
         FAILURES=$((FAILURES + 1))
     fi
+}
+
+# expect_payload ENDPOINT MODE PATTERN DESCRIPTION -- ARGS...
+#
+# Runs the script, then asserts against the request BODY the stub recorded for
+# ENDPOINT (e.g. UpdateApplication) rather than against stdout. The two can
+# disagree: the handoff block is echoed from shell variables, while
+# redirectUris/postLogoutRedirectUris are assembled separately by jq.
+#
+# Declare pre-existing apps first with `existing_apps NAME...` to drive the
+# script down the UpdateApplication path.
+expect_payload() {
+    local endpoint="$1" mode="$2" pattern="$3" desc="$4"; shift 4
+    [[ "$1" == "--" ]] && shift
+
+    : > "$REQ_LOG"
+    local out got_exit
+    out=$(cd "$SANDBOX" && ./setup-zitadel.sh "$@" 2>&1)
+    got_exit=$?
+
+    local body
+    body=$(python3 - "$REQ_LOG" "$endpoint" <<'PYX'
+import json, sys
+path, endpoint = sys.argv[1], sys.argv[2]
+hits = []
+try:
+    for line in open(path):
+        rec = json.loads(line)
+        if rec["path"].endswith("/" + endpoint):
+            hits.append(rec["body"])
+except OSError:
+    pass
+print(hits[-1] if hits else "")
+PYX
+)
+
+    local problem=""
+    if [[ "$got_exit" -ne 0 ]]; then
+        problem="script exited $got_exit"
+    elif [[ -z "$body" ]]; then
+        problem="no $endpoint request was recorded — the path under test never ran"
+    elif [[ "$mode" == "has" && "$body" != *"$pattern"* ]]; then
+        problem="$endpoint payload did not contain: $pattern"
+    elif [[ "$mode" == "lacks" && "$body" == *"$pattern"* ]]; then
+        problem="$endpoint payload WRONGLY contained: $pattern"
+    fi
+
+    if [[ -z "$problem" ]]; then
+        echo "${G}  PASS${N}  $desc"
+        PASSES=$((PASSES + 1))
+    else
+        echo "${R}  FAIL${N}  $desc"
+        echo "        $problem"
+        [[ -n "$body" ]] && echo "        | $body"
+        FAILURES=$((FAILURES + 1))
+    fi
+}
+
+# existing_apps NAME... — declare which apps ListApplications reports as present.
+existing_apps() {
+    : > "$EXISTING_FILE"
+    local n
+    for n in "$@"; do echo "$n" >> "$EXISTING_FILE"; done
 }
 
 start_stub || { echo "${R}[selftest] stub failed to start on port $PORT${N}" >&2; exit 1; }
@@ -286,6 +388,55 @@ expect 64 has "Unknown target" \
     "an unknown target is still rejected" -- \
     --target nowhere --provision-cdcf-website
 
+echo "${B}[selftest]${N} --- the UPDATE path: what a run sends to an app that already exists ---"
+
+# These matter more than the create cases. UpdateApplication replaces the whole
+# redirectUris array on an app that is already serving traffic, so this is the
+# call that can strip a production callback. The create path cannot do that.
+
+existing_apps "LiturgicalCalendarFrontend"
+expect_payload UpdateApplication lacks "litcal-staging.johnromanodorazio.com" \
+    "production update never sends a staging origin to the production app" -- \
+    --target production --provision-litcal-frontend
+
+existing_apps "LiturgicalCalendarFrontend"
+expect_payload UpdateApplication has "https://litcal.johnromanodorazio.com/auth/callback.php" \
+    "production update still sends the production callback" -- \
+    --target production --provision-litcal-frontend
+
+existing_apps "LiturgicalCalendarFrontend (Staging)"
+expect_payload UpdateApplication lacks "https://litcal.johnromanodorazio.com/auth/callback.php" \
+    "staging update targets the Staging app and never sends the production callback" -- \
+    --target staging --provision-litcal-frontend
+
+existing_apps "CDCF Website (Non-Prod)"
+expect_payload UpdateApplication lacks "localhost:3000" \
+    "CDCF staging update strips localhost from the non-prod app" -- \
+    --target staging --provision-cdcf-website
+
+existing_apps "CDCF Website (Non-Prod)"
+expect_payload UpdateApplication has '"devMode": false' \
+    "CDCF staging update sends devMode=false — HTTPS-only needs no dev mode" -- \
+    --target staging --provision-cdcf-website
+
+existing_apps "CDCF Website"
+expect_payload UpdateApplication has "https://catholicdigitalcommons.org/api/auth/callback/zitadel" \
+    "CDCF production update sends the production callback" -- \
+    --target production --provision-cdcf-website
+
+existing_apps "CDCF Website"
+expect_payload UpdateApplication has '"devMode": true' \
+    "CDCF local update sends devMode=true, which the HTTP callback requires" -- \
+    --target local --provision-cdcf-website
+
+# The name filter is how the target picks WHICH app to touch. If it regressed,
+# a staging run would find and then overwrite the production app.
+existing_apps "CDCF Website (Non-Prod)"
+expect_payload ListApplications has '"name":"CDCF Website (Non-Prod)"' \
+    "staging looks up the Non-Prod app by name, not the production one" -- \
+    --target staging --provision-cdcf-website
+
+existing_apps
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "${R}[selftest] $FAILURES of $((PASSES + FAILURES)) case(s) FAILED.${N}"

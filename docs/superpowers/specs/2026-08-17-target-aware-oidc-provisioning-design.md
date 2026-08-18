@@ -3,7 +3,7 @@
 **Date:** 2026-08-17
 **Repos touched:** `cdcf-infra`, `LiturgicalCalendarFrontend` (staging deploy only)
 **Issue:** #20
-**Depends on:** a local Zitadel stack in `cdcf-website` — designed and built **before** this (see §2.4)
+**Depends on:** a local Zitadel stack in `cdcf-website` — built before this and **satisfied** as of 2026-08-17 (see §2.4)
 **Status:** design, pending implementation plan
 
 ---
@@ -65,9 +65,11 @@ This is the behaviour change most likely to surprise an operator and must be doc
 
 `CDCF_FRONTEND_NONPROD_URLS` registers `http://localhost:3000` in the **production** Zitadel. This contradicts `CatholicOS/martyrology-api#26`, which settled that local development happens against a separate local Zitadel rather than a localhost client in the production instance — which is why LitCal and Martyrology have none. It is drift predating that decision, and this design removes it.
 
-Removal has a prerequisite that does not exist yet: `cdcf-website` has no local Zitadel (no `zitadel` service in its compose; only `docs/zitadel-oidc-plan.md`). Dropping the localhost origin before that stack exists would not relocate the capability, it would delete it, leaving CDCF developers with no local OIDC login at all.
+Removal had a prerequisite: a local Zitadel in `cdcf-website`, which had none (no `zitadel` service in its compose; only `docs/zitadel-oidc-plan.md`). Dropping the localhost origin before that stack existed would not have relocated the capability, it would have deleted it, leaving CDCF developers with no local OIDC login at all.
 
-**That stack is therefore built first, as its own piece of work with its own design** — a different repo and a different subsystem, with `martyrology-api`'s compose as the closest template. This spec depends on it. Implementing #20 before it exists reintroduces exactly the gap described above.
+**That stack was therefore built first, as its own piece of work with its own design** — a different repo and a different subsystem, with `martyrology-api`'s compose as the closest template.
+
+**Status: satisfied.** It shipped on 2026-08-17 (`cdcf-website` PR #286: `zitadel` + `zitadel-db`, later `zitadel-login` + `zitadel-proxy` for Login V2), and its browser sign-in was operator-verified — the check that nothing in the flow reaches `auth.catholicdigitalcommons.org`. The requirement stands rather than lapses: §4.1's order still applies, and the localhost origin is removed only after developers are actually on that stack, which is what "verified, not assumed" meant.
 
 **Consequence for live state:** CDCF's production app is untouched (it already carries only the production origin), but its **non-prod app loses `http://localhost:3000`** on the first `--target staging` run after this lands. That is a real change to the production Zitadel, sequenced in §4.
 
