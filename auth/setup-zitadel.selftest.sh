@@ -78,6 +78,25 @@ ZITADEL_ADMIN_EMAIL=stub@example.org
 EOF
 done
 
+# Property-shaped sandboxes for the --target local cross-provisioning guard
+# (issue #34). The guard infers the property from the PAT's own location —
+# <property>/.zitadel-data/automation-user.pat — so these cases need real
+# directory shape, not just a distinct filename.
+#
+# The plain .env.local above deliberately keeps its PAT at $SANDBOX root, which
+# infers NO property. That is what a hand-rolled shared .env.local looks like,
+# and the guard must refuse it for property-bound actions.
+for prop in cdcf-website martyrology-api martyrology-frontend; do
+    mkdir -p "$SANDBOX/${prop}/.zitadel-data"
+    printf 'stub-pat\n' > "$SANDBOX/${prop}/.zitadel-data/automation-user.pat"
+    cat > "$SANDBOX/.env.local.${prop}" <<EOF
+ZITADEL_ISSUER=https://auth.catholicdigitalcommons.org
+ZITADEL_INTERNAL_URL=http://127.0.0.1:${PORT}
+ZITADEL_PAT_FILE=${SANDBOX}/${prop}/.zitadel-data/automation-user.pat
+ZITADEL_ADMIN_EMAIL=stub@example.org
+EOF
+done
+
 cat > "$SANDBOX/stub.py" <<'PYEOF'
 """Stub Zitadel. Serves only what setup-zitadel.sh calls.
 
@@ -205,15 +224,22 @@ start_stub() {
     return 1
 }
 
-# expect EXPECTED_EXIT MODE PATTERN DESCRIPTION -- ARGS...
+# expect EXPECTED_EXIT MODE PATTERN DESCRIPTION -- [VAR=value...] ARGS...
 #   MODE: has  -> output MUST contain PATTERN
 #         lacks -> output must NOT contain PATTERN
+#
+# Any leading VAR=value tokens after the -- are exported for that run only, so
+# a case can select its env file (ENV_FILE=.env.local.<property>) or set the
+# guard override without leaking either into the next case.
 expect() {
     local want_exit="$1" mode="$2" pattern="$3" desc="$4"; shift 4
     [[ "$1" == "--" ]] && shift
 
+    local envs=()
+    while [[ $# -gt 0 && "$1" == [A-Z_]*=* ]]; do envs+=("$1"); shift; done
+
     local out got_exit
-    out=$(cd "$SANDBOX" && ./setup-zitadel.sh "$@" 2>&1)
+    out=$(cd "$SANDBOX" && env ${envs[@]+"${envs[@]}"} ./setup-zitadel.sh "$@" 2>&1)
     got_exit=$?
 
     local problem=""
@@ -249,9 +275,12 @@ expect_payload() {
     local endpoint="$1" mode="$2" pattern="$3" desc="$4"; shift 4
     [[ "$1" == "--" ]] && shift
 
+    local envs=()
+    while [[ $# -gt 0 && "$1" == [A-Z_]*=* ]]; do envs+=("$1"); shift; done
+
     : > "$REQ_LOG"
     local out got_exit
-    out=$(cd "$SANDBOX" && ./setup-zitadel.sh "$@" 2>&1)
+    out=$(cd "$SANDBOX" && env ${envs[@]+"${envs[@]}"} ./setup-zitadel.sh "$@" 2>&1)
     got_exit=$?
 
     local body
@@ -332,11 +361,11 @@ echo "${B}[selftest]${N} --- CDCF: one app per environment, no localhost in prod
 
 expect 0 has "http://localhost:3000/api/auth/callback/zitadel" \
     "local registers the localhost origin" -- \
-    --target local --provision-cdcf-website
+    ENV_FILE=.env.local.cdcf-website --target local --provision-cdcf-website
 
 expect 0 has "devMode=true" \
     "local sets devMode, which the HTTP localhost callback requires" -- \
-    --target local --provision-cdcf-website
+    ENV_FILE=.env.local.cdcf-website --target local --provision-cdcf-website
 
 expect 0 has "https://staging.catholicdigitalcommons.org/api/auth/callback/zitadel" \
     "staging registers the staging origin on the Non-Prod app" -- \
@@ -358,7 +387,7 @@ echo "${B}[selftest]${N} --- Martyrology: unchanged behaviour, shared skip helpe
 
 expect 0 has "http://localhost:3000/api/auth/callback/zitadel" \
     "local registers the localhost origin" -- \
-    --target local --provision-martyrology-frontend
+    ENV_FILE=.env.local.martyrology-frontend --target local --provision-martyrology-frontend
 
 expect 0 has "https://romanmartyrology.com/api/auth/callback/zitadel" \
     "production registers the production origin" -- \
@@ -376,7 +405,99 @@ expect 0 has "skipping" \
 
 expect 0 has "skipping" \
     "--all --target local sweeps past LitCal rather than failing the sweep" -- \
-    --target local --all
+    ZITADEL_ALLOW_FOREIGN_PAT=1 --target local --all
+
+echo "${B}[selftest]${N} --- issue #34: --target local cross-provisioning guard ---"
+
+# The failure this blocks is SILENT, not loud: a PAT that is a valid IAM_OWNER
+# for cdcf-website's local Zitadel will happily create Martyrology's Project,
+# roles and app inside it, and every API call succeeds. Both instances are
+# "local", so there is no target-name difference to notice. The guard reads the
+# property out of the PAT's own path and refuses when it disagrees with the
+# action.
+
+expect 17 has "martyrology-api" \
+    "provisioning Martyrology with cdcf-website's PAT refuses, and names the property it wanted" -- \
+    ENV_FILE=.env.local.cdcf-website --target local --provision-martyrology
+
+expect 17 has "cdcf-website" \
+    "the refusal also names the property the PAT actually belongs to" -- \
+    ENV_FILE=.env.local.cdcf-website --target local --provision-martyrology
+
+expect 17 lacks "handoff values" \
+    "a refused run writes nothing — no handoff block means no Project was created" -- \
+    ENV_FILE=.env.local.cdcf-website --target local --provision-martyrology
+
+expect 0 has "Martyrology handoff values" \
+    "the same action with its OWN property's PAT provisions normally" -- \
+    ENV_FILE=.env.local.martyrology-api --target local --provision-martyrology
+
+expect 17 has "martyrology-frontend" \
+    "the frontend app belongs only in the frontend's own stack, not the API's" -- \
+    ENV_FILE=.env.local.martyrology-api --target local --provision-martyrology-frontend
+
+# A property's stack may legitimately host another property's Project.
+# martyrology-frontend/scripts/setup-stack.sh runs --provision-martyrology
+# against its OWN instance, because the frontend authenticates there and needs
+# the Martyrology Project and roles to exist. Pinning the action to
+# martyrology-api alone would refuse that correct run — so the check is an
+# allow-list, and what stays refused is the cross-FAMILY case #34 reported.
+expect 0 has "Martyrology handoff values" \
+    "the frontend's stack may provision the Martyrology Project it authenticates against" -- \
+    ENV_FILE=.env.local.martyrology-frontend --target local --provision-martyrology
+
+expect 0 has "Martyrology Frontend" \
+    "martyrology-frontend's real setup-stack.sh invocation is not broken by the guard" -- \
+    ENV_FILE=.env.local.martyrology-frontend --target local \
+    --create-org Martyrology --provision-martyrology --provision-martyrology-frontend
+
+expect 17 has "martyrology-api or martyrology-frontend" \
+    "but cdcf-website's stack still may not — that is the cross-family bug in #34" -- \
+    ENV_FILE=.env.local.cdcf-website --target local --provision-martyrology
+
+expect 17 has "ENV_FILE=.env.local." \
+    "a bare shared .env.local infers no property at all, and is refused with the fix" -- \
+    --target local --provision-cdcf-website
+
+expect 0 has "Provisioning CDCF Website" \
+    "the override lets an unusual layout through" -- \
+    ZITADEL_ALLOW_FOREIGN_PAT=1 --target local --provision-cdcf-website
+
+echo "${B}[selftest]${N} --- the guard is local-only, and instance-wide actions are exempt ---"
+
+expect 0 has "Org already exists" \
+    "--create-orgs is instance-wide, so it passes with any PAT" -- \
+    --target local --create-orgs
+
+expect 0 lacks "belongs to" \
+    "--rename-bootstrap-admin is instance-wide too and is never guarded" -- \
+    --target local --rename-bootstrap-admin
+
+expect 0 has "CDCF Website handoff values" \
+    "production is never guarded — the PAT path convention is a local-stack thing" -- \
+    --target production --provision-cdcf-website
+
+expect 0 has "CDCF Website (Non-Prod)" \
+    "staging is never guarded either" -- \
+    --target staging --provision-cdcf-website
+
+expect 17 has "belongs to" \
+    "a local --all spans properties, so it cannot resolve to one instance" -- \
+    ENV_FILE=.env.local.cdcf-website --target local --all
+
+echo "${B}[selftest]${N} --- LitCal has no local stack: skip, never a silent write ---"
+
+expect 0 has "No local stack is defined for LiturgicalCalendar" \
+    "--provision-litcal skips on local rather than landing LitCal in another property's Zitadel" -- \
+    ENV_FILE=.env.local.cdcf-website --target local --provision-litcal
+
+expect 0 lacks "LiturgicalCalendar handoff values" \
+    "the skip is real: no Project, no roles, no app, no handoff block" -- \
+    ENV_FILE=.env.local.cdcf-website --target local --provision-litcal
+
+expect 0 has "LiturgicalCalendarAPI/scripts/setup-zitadel.sh" \
+    "and it names the script that DOES provision LitCal locally" -- \
+    ENV_FILE=.env.local.cdcf-website --target local --provision-litcal
 
 echo "${B}[selftest]${N} --- usage exits are unchanged ---"
 
@@ -427,7 +548,7 @@ expect_payload UpdateApplication has "https://catholicdigitalcommons.org/api/aut
 existing_apps "CDCF Website"
 expect_payload UpdateApplication has '"devMode": true' \
     "CDCF local update sends devMode=true, which the HTTP callback requires" -- \
-    --target local --provision-cdcf-website
+    ENV_FILE=.env.local.cdcf-website --target local --provision-cdcf-website
 
 # The name filter is how the target picks WHICH app to touch. If it regressed,
 # a staging run would find and then overwrite the production app.

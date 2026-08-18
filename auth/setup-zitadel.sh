@@ -114,6 +114,21 @@ Environment variables (sourced from .env.\$target):
   ZITADEL_PAT_FILE               (default: /opt/cdcf-auth/runtime/zitadel-data/automation-user.pat)
   ZITADEL_ADMIN_EMAIL            (used by --rename-bootstrap-admin)
 
+Env file selection:
+  ENV_FILE                       overrides the .env.\$target default above.
+  ZITADEL_ALLOW_FOREIGN_PAT=1    disables the --target local property check.
+
+  On --target local, use one env file PER PROPERTY:
+
+      ENV_FILE=.env.local.cdcf-website ./setup-zitadel.sh --target local --provision-cdcf-website
+
+  Every property runs its own local Zitadel, so "local" names a different
+  instance per property. A single shared .env.local is last-writer-wins, and
+  provisioning property A while it points at property B's instance SUCCEEDS
+  silently — B's PAT is a valid IAM_OWNER there, so A's Project, roles and app
+  land inside B with no error and normal-looking output. The script refuses
+  that combination (exit 17) by reading the property out of the PAT's own path.
+
 Targets and sweeps:
   A target provisions ONE app per property, not every app. So a full refresh is
   two sweeps, not one:
@@ -224,10 +239,97 @@ err()  { echo "${R}    ✗${N} $*" >&2; }
 no_origins_for_target() {
     local count="$1" target="$2"; shift 2
     [[ "$count" -gt 0 ]] && return 1
-    warn "No origin is defined for --target ${target}; skipping."
+    skip_action "No origin is defined for --target ${target}; skipping." "$@"
+}
+
+# skip_action REASON GUIDANCE...
+#
+# Warn and return 0, so the caller can `&& return 0` out of an action that has
+# nothing to do on this target. Owns the skip contract described above; the
+# origin check is one caller of it, the LitCal local-stack check is another.
+skip_action() {
+    local reason="$1"; shift
+    warn "$reason"
     local line
     for line in "$@"; do warn "  $line"; done
     return 0
+}
+
+# --- issue #34: --target local cross-provisioning guard --------------------
+#
+# Every umbrella property runs its OWN local Zitadel, so "local" does not name
+# one instance the way "production" does. With a single shared .env.local,
+# whichever property was configured last wins — and provisioning property A
+# while it points at property B's instance does not fail. That PAT is a valid
+# IAM_OWNER for the instance it belongs to, so every API call succeeds, the
+# output looks completely normal, and A's Project, roles and app quietly land
+# inside B. Both are "local", so there is no target name to notice either.
+#
+# The convention that fixes it is ENV_FILE=.env.local.<property>. The guard
+# below is what makes a violation loud instead of silent.
+
+# Property that owns the resolved PAT, inferred from the PAT's own location:
+# local stacks keep it at <property>/.zitadel-data/automation-user.pat. Empty
+# when the path does not have that shape — which is itself a mismatch for any
+# property-bound action, since a correctly-configured local run always does.
+pat_property() {
+    local dir
+    dir=$(cd "$(dirname "$ZITADEL_PAT_FILE")" 2>/dev/null && pwd -P) || return 0
+    [[ "$(basename "$dir")" == ".zitadel-data" ]] || return 0
+    basename "$(dirname "$dir")"
+}
+
+# Local stacks each action may legitimately be run against, or empty when the
+# action is not property-bound. create-orgs / create-org /
+# rename-bootstrap-admin are instance-wide by nature, and the LitCal actions
+# skip on local of their own accord, so none of them are guarded.
+#
+# An ALLOW-LIST rather than one property per action, because a property's stack
+# may legitimately host another property's Project. martyrology-frontend's
+# scripts/setup-stack.sh runs --provision-martyrology against its OWN instance:
+# the frontend authenticates against that Zitadel, so the Martyrology Project
+# and roles have to exist there. Pinning the action to martyrology-api alone
+# would refuse a correct run.
+#
+# What stays refused is the cross-FAMILY case, which is the one #34 reported:
+# provisioning Martyrology while the PAT points at cdcf-website.
+action_properties() {
+    case "$1" in
+        provision-cdcf-website)         echo "cdcf-website" ;;
+        provision-martyrology)          echo "martyrology-api martyrology-frontend" ;;
+        provision-martyrology-frontend) echo "martyrology-frontend" ;;
+        *)                              echo "" ;;
+    esac
+}
+
+guard_local_property() {
+    [[ "$TARGET" == "local" ]] || return 0
+
+    local owner
+    owner=$(pat_property)
+
+    if [[ "${ZITADEL_ALLOW_FOREIGN_PAT:-}" == "1" ]]; then
+        warn "ZITADEL_ALLOW_FOREIGN_PAT=1 — the local property check is disabled for this run."
+        return 0
+    fi
+
+    local action allowed
+    for action in "${ACTIONS[@]}"; do
+        allowed=$(action_properties "${action%%:*}")
+        [[ -z "$allowed" ]] && continue
+        # Space-delimited membership test; the guard string is built here, so
+        # the padding cannot come from anything the caller controls.
+        [[ -n "$owner" && " $allowed " == *" $owner "* ]] && continue
+
+        err "--${action%%:*} belongs in ${allowed// / or }, but the resolved PAT belongs to ${owner:-no property}."
+        warn "  PAT: $ZITADEL_PAT_FILE"
+        warn "  Running this would create that Project, its roles and its app inside"
+        warn "  ${owner:-another property}'s local Zitadel, and it would SUCCEED — that PAT is a"
+        warn "  valid IAM_OWNER there, so nothing would error and nothing would look wrong."
+        warn "  Fix: ENV_FILE=.env.local.${allowed%% *} ./setup-zitadel.sh --target local --${action%%:*}"
+        warn "  Override for an unusual layout: ZITADEL_ALLOW_FOREIGN_PAT=1"
+        exit 17
+    done
 }
 
 # --- API helper -----------------------------------------------------------
@@ -843,6 +945,22 @@ do_provision_cdcf_website() {
 
 do_provision_litcal() {
     log "Provisioning LiturgicalCalendar"
+    # LitCal has no local stack in this repo — no litcal .zitadel-data exists,
+    # so on --target local the PAT necessarily belongs to some OTHER property
+    # and this action would create the LiturgicalCalendar Project, roles and API
+    # app inside that property's Zitadel. Unlike the frontend actions there is
+    # no origin list to come up empty, so nothing stopped it before (#34).
+    #
+    # Skip rather than refuse, for the same reason the origin check skips: a
+    # non-zero exit here would make `--target local --all` unusable.
+    if [[ "$TARGET" == "local" ]]; then
+        skip_action "No local stack is defined for LiturgicalCalendar; skipping." \
+            "LitCal's local Zitadel is provisioned by the API repo, not this script:" \
+            "  LiturgicalCalendarAPI/scripts/setup-zitadel.sh" \
+            "Running it here would land LitCal's Project and roles in whichever" \
+            "property's local instance this PAT belongs to." \
+            "Use --target staging or --target production here." && return 0
+    fi
     local org_id
     org_id=$(find_org_id "LiturgicalCalendar")
     if [[ -z "$org_id" ]]; then
@@ -1072,6 +1190,16 @@ do_provision_martyrology_frontend() {
 # --- main -----------------------------------------------------------------
 
 log "Target: $TARGET (issuer: $ZITADEL_ISSUER, internal: $ZITADEL_INTERNAL_URL)"
+# On local the issuer alone does not identify the instance — every property's
+# stack is some http://localhost:PORT. The PAT path is what actually says which
+# one, so print it, and the property read out of it, before anything is written.
+if [[ "$TARGET" == "local" ]]; then
+    log "PAT file: $ZITADEL_PAT_FILE"
+    _pat_owner=$(pat_property)
+    log "Local property: ${_pat_owner:-<none — PAT is not under a <property>/.zitadel-data/>}"
+fi
+
+guard_local_property
 
 for action in "${ACTIONS[@]}"; do
     case "${action%%:*}" in
