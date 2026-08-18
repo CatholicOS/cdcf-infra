@@ -116,7 +116,7 @@ The production app is never touched by this sequence.
 
 `auth/handoffs/liturgicalcalendar.md` records a single frontend client_id (`:21`, `:76`) and gains the staging app alongside it.
 
-CDCF and Martyrology need no migration.
+Martyrology needs no migration. (CDCF's is §4.1 above — an earlier revision of this spec said CDCF needed none, which stopped being true when the localhost origin moved out of the production Zitadel.)
 
 ## 5. Testing
 
