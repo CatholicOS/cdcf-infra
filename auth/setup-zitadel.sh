@@ -91,8 +91,14 @@ Actions:
   --create-orgs               Create CDCF, LiturgicalCalendar, BibleGet, OntoKit, Martyrology (idempotent)
   --create-org NAME           Create a single Org by name (idempotent)
   --provision-litcal          Provision LitCal Project + roles + API app
-  --provision-litcal-frontend Provision LitCal Frontend OIDC app (Web/PKCE)
-  --provision-cdcf-website    Provision CDCF Website Project + roles + Web OIDC app (client_secret_post)
+  --provision-litcal-frontend Provision LitCal Frontend OIDC app (Web/PKCE).
+                              App AND origin follow --target: separate apps for
+                              production and staging. Skips on local (that
+                              instance is provisioned by the LitCal API repo).
+  --provision-cdcf-website    Provision CDCF Website Project + roles + Web OIDC app (client_secret_post).
+                              App AND origin follow --target: "CDCF Website" on
+                              production, "CDCF Website (Non-Prod)" on staging,
+                              localhost+devMode on local.
   --provision-martyrology     Provision Martyrology Project + roles + API app (client_secret_basic)
   --provision-martyrology-frontend
                               Provision Martyrology Frontend OIDC app (Web/client_secret_post).
@@ -107,6 +113,26 @@ Environment variables (sourced from .env.\$target):
   ZITADEL_INTERNAL_URL           (default: http://127.0.0.1:8080)
   ZITADEL_PAT_FILE               (default: /opt/cdcf-auth/runtime/zitadel-data/automation-user.pat)
   ZITADEL_ADMIN_EMAIL            (used by --rename-bootstrap-admin)
+
+Targets and sweeps:
+  A target provisions ONE app per property, not every app. So a full refresh is
+  two sweeps, not one:
+
+      ./setup-zitadel.sh --target production --all
+      ./setup-zitadel.sh --target staging    --all
+
+  An action with no origin defined for the given target skips with a warning
+  and exits 0 — whether you named it explicitly or swept it with --all. That is
+  deliberate: a non-zero exit would make --all unusable on any target where any
+  one property lacks a deployment, which is true of staging today.
+
+  ORDERING WARNING (LitCal): --target staging creates the new
+  "LiturgicalCalendarFrontend (Staging)" app and emits a NEW client_id. Re-pin
+  and deploy the staging frontend with it BEFORE running --target production,
+  because that run is what drops the staging origin from the production app.
+  Doing it the other way round breaks staging sign-in in the gap. Production
+  sign-in is never at risk: the production app keeps its own client_id and
+  origin throughout.
 EOF
     exit 64
 }
@@ -185,6 +211,24 @@ log()  { echo "${B}[setup-zitadel]${N} $*" >&2; }
 ok()   { echo "${G}    ✓${N} $*" >&2; }
 warn() { echo "${Y}    ⚠${N} $*" >&2; }
 err()  { echo "${R}    ✗${N} $*" >&2; }
+
+# no_origins_for_target COUNT TARGET GUIDANCE...
+#
+# True when the resolved origin set is empty, after warning. Callers read:
+#   no_origins_for_target "${#X_URLS[@]}" "$TARGET" "..." && return 0
+#
+# One behaviour whether the action was named explicitly or swept by --all: a
+# target a property has no deployment for is not an error, it is nothing to do.
+# Exiting non-zero here would make `--all` unusable on any target where any one
+# property lacks an origin — which is true of --target staging today.
+no_origins_for_target() {
+    local count="$1" target="$2"; shift 2
+    [[ "$count" -gt 0 ]] && return 1
+    warn "No origin is defined for --target ${target}; skipping."
+    local line
+    for line in "$@"; do warn "  $line"; done
+    return 0
+}
 
 # --- API helper -----------------------------------------------------------
 
@@ -313,7 +357,8 @@ do_rename_bootstrap_admin() {
 
 LITCAL_PROJECT_NAME="LiturgicalCalendarAPI"
 LITCAL_API_APP_NAME="LiturgicalCalendarAPI Backend"
-LITCAL_FRONTEND_APP_NAME="LiturgicalCalendarFrontend"
+# LITCAL_FRONTEND_APP_NAME is set by the --target case block below: the
+# production and staging frontends are now separate apps.
 LITCAL_ROLES=("admin:System Administrator" \
               "developer:Developer (API consumer)" \
               "calendar_editor:Calendar Editor" \
@@ -327,12 +372,37 @@ MARTYROLOGY_ROLES=("admin:System Administrator" \
                    "martyrology_editor:Martyrology Editor" \
                    "developer:Developer (API consumer)")
 
-# Frontend deployment URLs (prod + staging). Used to register OIDC
-# callback + post-logout URIs on the Frontend OIDC app.
-LITCAL_FRONTEND_URLS=(
-    "https://litcal.johnromanodorazio.com"
-    "https://litcal-staging.johnromanodorazio.com"
-)
+# App name AND origins follow --target, because production and staging share
+# ONE Zitadel instance (staging denotes the production instance carrying the
+# staging origin set). create_oidc_web_app sends the whole redirectUris array
+# to UpdateApplication, so a run REPLACES the registered set: while prod and
+# staging origins shared one app, `--target staging` would have stripped the
+# production callback. Separately-named apps make that impossible — no run
+# touches both.
+#
+# --target local registers NOTHING on purpose. LitCal's local Zitadel is
+# provisioned by LiturgicalCalendarAPI/scripts/setup-zitadel.sh (extracted from
+# the litcal-api image by the Frontend repo's wrapper), which creates its own
+# app named "LiturgicalCalendar Frontend" at http://localhost:$FRONTEND_PORT.
+# A second provisioner here would use a DIFFERENT app name, so the two would
+# never converge — they would accumulate.
+case "$TARGET" in
+    production)
+        LITCAL_FRONTEND_APP_NAME="LiturgicalCalendarFrontend"
+        LITCAL_FRONTEND_URLS=("https://litcal.johnromanodorazio.com")
+        LITCAL_FRONTEND_LABEL="Production"
+        ;;
+    staging)
+        LITCAL_FRONTEND_APP_NAME="LiturgicalCalendarFrontend (Staging)"
+        LITCAL_FRONTEND_URLS=("https://litcal-staging.johnromanodorazio.com")
+        LITCAL_FRONTEND_LABEL="Staging"
+        ;;
+    *)
+        LITCAL_FRONTEND_APP_NAME="LiturgicalCalendarFrontend"
+        LITCAL_FRONTEND_URLS=()
+        LITCAL_FRONTEND_LABEL="$TARGET"
+        ;;
+esac
 LITCAL_FRONTEND_CALLBACK_PATH="/auth/callback.php"
 
 # x-zitadel-orgid header lets a PAT operate on a different org than its home org.
@@ -587,7 +657,15 @@ create_oidc_api_app() {
 }
 
 do_provision_litcal_frontend() {
-    log "Provisioning LiturgicalCalendar Frontend OIDC app"
+    log "Provisioning LiturgicalCalendar Frontend OIDC app ($LITCAL_FRONTEND_LABEL)"
+    # Skip before touching the API, so `--all --target local` sweeps past this
+    # action instead of registering an app with an empty redirect URI list.
+    no_origins_for_target "${#LITCAL_FRONTEND_URLS[@]}" "$TARGET" \
+        "LitCal's local Zitadel is provisioned by the API repo, not this script:" \
+        "  LiturgicalCalendarAPI/scripts/setup-zitadel.sh, run via the Frontend" \
+        "  repo's scripts/setup-zitadel.sh wrapper. It creates its own app under" \
+        "  a different name, so a second provisioner here would accumulate." \
+        "Use --target staging or --target production here." && return 0
     local org_id project_id
     org_id=$(find_org_id "LiturgicalCalendar")
     [[ -z "$org_id" ]] && { err "LiturgicalCalendar Org not found. Run --create-orgs first."; exit 11; }
@@ -608,7 +686,7 @@ do_provision_litcal_frontend() {
     IFS='|' read -r app_id client_id _client_secret <<<"$app_info"
 
     echo
-    echo "${B}=== LiturgicalCalendar Frontend handoff values ===${N}"
+    echo "${B}=== LiturgicalCalendar Frontend handoff values — $LITCAL_FRONTEND_LABEL ($LITCAL_FRONTEND_APP_NAME) ===${N}"
     echo "ZITADEL_ISSUER=$ZITADEL_ISSUER"
     echo "ZITADEL_PROJECT_ID=$project_id"
     echo "ZITADEL_FRONTEND_APP_ID=$app_id"
@@ -641,18 +719,47 @@ CDCF_ROLES=("subscriber:Subscriber (default, no edit capabilities)" \
             "editor:Editor (publish + edit others)" \
             "administrator:Administrator (full WP-admin)")
 
-# Production origins (HTTPS only, devMode=false). Get their own confidential
-# client + client_secret so production credentials are never shared with
-# staging or localhost dev environments.
-CDCF_FRONTEND_URLS=(
-    "https://catholicdigitalcommons.org"
-)
-# Non-production origins (staging + localhost dev). Share a separate
-# confidential client (devMode=true permits the HTTP localhost callback).
-CDCF_FRONTEND_NONPROD_URLS=(
-    "https://staging.catholicdigitalcommons.org"
-    "http://localhost:3000"
-)
+# One app per environment, selected by --target. CDCF already had the two-app
+# split; the target now chooses between them instead of creating both, so a
+# run only ever touches the environment it names. Each app keeps its own
+# confidential client + client_secret, so production credentials are never
+# shared with staging or local dev.
+#
+# http://localhost:3000 is deliberately ABSENT from every deployed target. It
+# used to ride along in the non-prod app, which put a localhost client in the
+# PRODUCTION Zitadel — contradicting CatholicOS/martyrology-api#26, which
+# settled that local development runs against a separate local Zitadel. That
+# local stack now exists (cdcf-website PR #286, operator-verified), so the
+# origin MOVES to --target local rather than being deleted.
+#
+# staging is devMode=false: with the HTTP localhost origin gone, the non-prod
+# app is HTTPS-only and no longer needs devMode. Only --target local does.
+case "$TARGET" in
+    production)
+        CDCF_FRONTEND_APP_NAME="$CDCF_APP_NAME"
+        CDCF_FRONTEND_URLS=("https://catholicdigitalcommons.org")
+        CDCF_FRONTEND_DEV_MODE="false"
+        CDCF_FRONTEND_LABEL="Production"
+        ;;
+    staging)
+        CDCF_FRONTEND_APP_NAME="$CDCF_APP_NAME_NONPROD"
+        CDCF_FRONTEND_URLS=("https://staging.catholicdigitalcommons.org")
+        CDCF_FRONTEND_DEV_MODE="false"
+        CDCF_FRONTEND_LABEL="Staging"
+        ;;
+    local)
+        CDCF_FRONTEND_APP_NAME="$CDCF_APP_NAME"
+        CDCF_FRONTEND_URLS=("http://localhost:3000")
+        CDCF_FRONTEND_DEV_MODE="true"
+        CDCF_FRONTEND_LABEL="Local"
+        ;;
+    *)
+        CDCF_FRONTEND_APP_NAME="$CDCF_APP_NAME"
+        CDCF_FRONTEND_URLS=()
+        CDCF_FRONTEND_DEV_MODE="false"
+        CDCF_FRONTEND_LABEL="$TARGET"
+        ;;
+esac
 CDCF_FRONTEND_CALLBACK_PATH="/api/auth/callback/zitadel"
 
 # Create one CDCF Website OIDC app and emit its handoff block. Internal
@@ -722,10 +829,15 @@ do_provision_cdcf_website() {
     echo "ZITADEL_ORG_ID=$org_id"
     echo "ZITADEL_PROJECT_ID=$project_id"
 
-    _emit_cdcf_app "$project_id" "$CDCF_APP_NAME" "false" "Production" \
+    # Guard AFTER org/project/roles setup so those still converge on any
+    # target, and BEFORE the app emit so an undefined target registers nothing.
+    no_origins_for_target "${#CDCF_FRONTEND_URLS[@]}" "$TARGET" \
+        "No CDCF Website origin is defined for this target." \
+        "Use --target local, --target staging or --target production." && return 0
+
+    _emit_cdcf_app "$project_id" "$CDCF_FRONTEND_APP_NAME" \
+        "$CDCF_FRONTEND_DEV_MODE" "$CDCF_FRONTEND_LABEL" \
         "${CDCF_FRONTEND_URLS[@]}"
-    _emit_cdcf_app "$project_id" "$CDCF_APP_NAME_NONPROD" "true" "Non-Production (staging + localhost)" \
-        "${CDCF_FRONTEND_NONPROD_URLS[@]}"
     echo
 }
 
@@ -929,12 +1041,9 @@ do_provision_martyrology_frontend() {
     # No origin defined for this target — skip before touching the API, so
     # `--all --target staging` sweeps past this action instead of registering
     # an app with an empty redirect URI list.
-    if [[ ${#MARTYROLOGY_FRONTEND_URLS[@]} -eq 0 ]]; then
-        warn "No Martyrology frontend origin is defined for --target $TARGET; skipping."
-        warn "  Martyrology has no staging deployment yet. Use --target local"
-        warn "  (localhost, against a local Zitadel) or --target production."
-        return 0
-    fi
+    no_origins_for_target "${#MARTYROLOGY_FRONTEND_URLS[@]}" "$TARGET" \
+        "Martyrology has no staging deployment yet. Use --target local" \
+        "(localhost, against a local Zitadel) or --target production." && return 0
     local org_id
     org_id=$(find_org_id "$MARTYROLOGY_ORG_NAME")
     if [[ -z "$org_id" ]]; then
