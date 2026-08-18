@@ -433,8 +433,27 @@ expect 0 has "Martyrology handoff values" \
     ENV_FILE=.env.local.martyrology-api --target local --provision-martyrology
 
 expect 17 has "martyrology-frontend" \
-    "martyrology-api and martyrology-frontend are separate instances, not interchangeable" -- \
+    "the frontend app belongs only in the frontend's own stack, not the API's" -- \
     ENV_FILE=.env.local.martyrology-api --target local --provision-martyrology-frontend
+
+# A property's stack may legitimately host another property's Project.
+# martyrology-frontend/scripts/setup-stack.sh runs --provision-martyrology
+# against its OWN instance, because the frontend authenticates there and needs
+# the Martyrology Project and roles to exist. Pinning the action to
+# martyrology-api alone would refuse that correct run — so the check is an
+# allow-list, and what stays refused is the cross-FAMILY case #34 reported.
+expect 0 has "Martyrology handoff values" \
+    "the frontend's stack may provision the Martyrology Project it authenticates against" -- \
+    ENV_FILE=.env.local.martyrology-frontend --target local --provision-martyrology
+
+expect 0 has "Martyrology Frontend" \
+    "martyrology-frontend's real setup-stack.sh invocation is not broken by the guard" -- \
+    ENV_FILE=.env.local.martyrology-frontend --target local \
+    --create-org Martyrology --provision-martyrology --provision-martyrology-frontend
+
+expect 17 has "martyrology-api or martyrology-frontend" \
+    "but cdcf-website's stack still may not — that is the cross-family bug in #34" -- \
+    ENV_FILE=.env.local.cdcf-website --target local --provision-martyrology
 
 expect 17 has "ENV_FILE=.env.local." \
     "a bare shared .env.local infers no property at all, and is refused with the fix" -- \

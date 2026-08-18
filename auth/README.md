@@ -210,7 +210,7 @@ Because the failure is silent rather than loud. With a single `.env.local`, whic
 
 ### The guard
 
-`setup-zitadel.sh` refuses that combination rather than trusting the convention to be followed. Local stacks keep their PAT at `<property>/.zitadel-data/automation-user.pat`, so the script reads the owning property out of the PAT's own path and compares it against the property each action provisions:
+`setup-zitadel.sh` refuses that combination rather than trusting the convention to be followed. Local stacks keep their PAT at `<property>/.zitadel-data/automation-user.pat`, so the script reads the owning property out of the PAT's own path and checks it against the stacks each action may legitimately target:
 
 ```text
 [setup-zitadel] Target: local (issuer: http://localhost:8090, internal: http://127.0.0.1:8090)
@@ -220,7 +220,19 @@ Because the failure is silent rather than loud. With a single `.env.local`, whic
     ⚠   Fix: ENV_FILE=.env.local.martyrology-api ./setup-zitadel.sh --target local --provision-martyrology
 ```
 
-Exit code **17**, before anything is written. Three details worth knowing:
+Exit code **17**, before anything is written.
+
+It is an **allow-list per action, not one property per action**, because a stack may legitimately host another property's Project:
+
+| Action | May run against |
+| --- | --- |
+| `--provision-cdcf-website` | `cdcf-website` |
+| `--provision-martyrology` | `martyrology-api`, `martyrology-frontend` |
+| `--provision-martyrology-frontend` | `martyrology-frontend` |
+
+`martyrology-frontend/scripts/setup-stack.sh` runs `--provision-martyrology` against its **own** instance — the frontend authenticates there, so the Martyrology Project and roles have to exist in it. Pinning that action to `martyrology-api` alone would refuse a correct run. What stays refused is the cross-**family** case, which is the one actually reported: Martyrology provisioned while the PAT points at cdcf-website.
+
+Three more details worth knowing:
 
 - **Instance-wide actions are exempt.** `--create-orgs`, `--create-org` and `--rename-bootstrap-admin` act on the instance rather than a property, and `--create-orgs` is a prerequisite for provisioning a fresh local stack at all, so none of them are guarded.
 - **LitCal skips on local, it does not refuse.** There is no LitCal local stack here — `--provision-litcal` and `--provision-litcal-frontend` both warn and exit 0, naming `LiturgicalCalendarAPI/scripts/setup-zitadel.sh`, which is what provisions LitCal locally. That keeps `--target local --all` sweeping, per the skip contract in `--help`.
@@ -288,7 +300,7 @@ The dedicated user is the principle-of-least-privilege boundary. Even if `VPS_SS
 1. Decide whether the property gets its own Zitadel Org (per-property isolation, default) or fits under an existing Org.
 2. Pre-provision the Org via `setup-zitadel.sh --target production --create-org <NAME>` if it doesn't exist.
 3. Add provisioning logic to `setup-zitadel.sh` (a new `do_provision_<property>` function mirroring `do_provision_litcal`) that creates the Project + roles + OIDC app(s) the property needs. Roles + OIDC app config should be lifted from the property's own dev compose / config to ensure exact parity.
-   - If the property runs a **local Zitadel stack**, add its action to the `action_property` table so the cross-provisioning guard covers it, and document its `.env.local.<property>` in [`--target local`](#--target-local-one-env-file-per-property) above. An action missing from that table is silently unguarded on local.
+   - If the property runs a **local Zitadel stack**, add its action to the `action_properties` allow-list so the cross-provisioning guard covers it, and document its `.env.local.<property>` in [`--target local`](#--target-local-one-env-file-per-property) above. An action missing from that table is silently unguarded on local; list every stack the action may legitimately run against, not just the property it is named after.
 4. For OpenFGA-using properties:
    - Drop the authorization model JSON into `auth/models/<StoreName>.json`.
    - If the model is inert without structural tuples (as `Martyrology` is), add them to `auth/models/<StoreName>.tuples.json` — an object with a `tuples` array of `{"user","relation","object"}` entries. Structural wiring only; never human role grants.

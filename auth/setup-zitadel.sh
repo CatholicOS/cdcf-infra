@@ -279,14 +279,24 @@ pat_property() {
     basename "$(dirname "$dir")"
 }
 
-# Repo directory each action provisions into, or empty when the action is not
-# property-bound. create-orgs / create-org / rename-bootstrap-admin are
-# instance-wide by nature, and the LitCal actions skip on local of their own
-# accord, so none of them are guarded.
-action_property() {
+# Local stacks each action may legitimately be run against, or empty when the
+# action is not property-bound. create-orgs / create-org /
+# rename-bootstrap-admin are instance-wide by nature, and the LitCal actions
+# skip on local of their own accord, so none of them are guarded.
+#
+# An ALLOW-LIST rather than one property per action, because a property's stack
+# may legitimately host another property's Project. martyrology-frontend's
+# scripts/setup-stack.sh runs --provision-martyrology against its OWN instance:
+# the frontend authenticates against that Zitadel, so the Martyrology Project
+# and roles have to exist there. Pinning the action to martyrology-api alone
+# would refuse a correct run.
+#
+# What stays refused is the cross-FAMILY case, which is the one #34 reported:
+# provisioning Martyrology while the PAT points at cdcf-website.
+action_properties() {
     case "$1" in
         provision-cdcf-website)         echo "cdcf-website" ;;
-        provision-martyrology)          echo "martyrology-api" ;;
+        provision-martyrology)          echo "martyrology-api martyrology-frontend" ;;
         provision-martyrology-frontend) echo "martyrology-frontend" ;;
         *)                              echo "" ;;
     esac
@@ -303,17 +313,20 @@ guard_local_property() {
         return 0
     fi
 
-    local action want
+    local action allowed
     for action in "${ACTIONS[@]}"; do
-        want=$(action_property "${action%%:*}")
-        [[ -z "$want" || "$want" == "$owner" ]] && continue
+        allowed=$(action_properties "${action%%:*}")
+        [[ -z "$allowed" ]] && continue
+        # Space-delimited membership test; the guard string is built here, so
+        # the padding cannot come from anything the caller controls.
+        [[ -n "$owner" && " $allowed " == *" $owner "* ]] && continue
 
-        err "--${action%%:*} provisions ${want}, but the resolved PAT belongs to ${owner:-no property}."
+        err "--${action%%:*} belongs in ${allowed// / or }, but the resolved PAT belongs to ${owner:-no property}."
         warn "  PAT: $ZITADEL_PAT_FILE"
-        warn "  Running this would create ${want}'s Project, roles and app inside"
+        warn "  Running this would create that Project, its roles and its app inside"
         warn "  ${owner:-another property}'s local Zitadel, and it would SUCCEED — that PAT is a"
         warn "  valid IAM_OWNER there, so nothing would error and nothing would look wrong."
-        warn "  Fix: ENV_FILE=.env.local.${want} ./setup-zitadel.sh --target local --${action%%:*}"
+        warn "  Fix: ENV_FILE=.env.local.${allowed%% *} ./setup-zitadel.sh --target local --${action%%:*}"
         warn "  Override for an unusual layout: ZITADEL_ALLOW_FOREIGN_PAT=1"
         exit 17
     done
