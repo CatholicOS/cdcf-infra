@@ -50,6 +50,8 @@ on:
       - 'auth/validate-expectations.selftest.sh'
       - 'auth/setup-openfga.sh'
       - 'auth/setup-openfga.selftest.sh'
+      - 'auth/setup-zitadel.sh'
+      - 'auth/setup-zitadel.selftest.sh'
       - '.github/workflows/validate-models.yml'
   push:
     branches:
@@ -60,6 +62,8 @@ on:
       - 'auth/validate-expectations.selftest.sh'
       - 'auth/setup-openfga.sh'
       - 'auth/setup-openfga.selftest.sh'
+      - 'auth/setup-zitadel.sh'
+      - 'auth/setup-zitadel.selftest.sh'
       - '.github/workflows/validate-models.yml'
   merge_group:
     types: [checks_requested]
@@ -97,6 +101,16 @@ jobs:
       # the failures that need a misbehaving server are reachable at all.
       - name: Self-test setup-openfga's exit-code contract
         run: ./auth/setup-openfga.selftest.sh
+
+      # setup-zitadel.sh's URL-bearing actions register OIDC redirect URIs, and
+      # UpdateApplication REPLACES the registered set rather than extending it.
+      # Before #20, production and staging origins shared one app, so a
+      # --target staging run would have stripped the production callback — a
+      # production outage, not a misconfiguration. The fix is an app split, and
+      # these cases pin it: staging must never emit the production origin, and
+      # the CDCF non-prod app must never carry a localhost one.
+      - name: Self-test setup-zitadel's target-aware provisioning
+        run: ./auth/setup-zitadel.selftest.sh
 
       - name: Validate models against consumer expectations
         run: ./auth/validate-expectations.sh
