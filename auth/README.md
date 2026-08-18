@@ -14,6 +14,7 @@ Both run as containers on the existing cdcf-website Plesk VPS via the Plesk Dock
 | `/opt/cdcf-auth/` | Git clone of [`CatholicOS/cdcf-infra`](https://github.com/CatholicOS/cdcf-infra). All compose, env, and scripts live under here. |
 | `/opt/cdcf-auth/auth/docker-compose.prod.yml` | The compose file. |
 | `/opt/cdcf-auth/auth/.env.production` | Secrets (gitignored, mode 0600, deploy user only). |
+| `/opt/cdcf-auth/auth/.env.staging` | Endpoints only, no secrets — `--target staging` is the PRODUCTION instance carrying the staging origin set. Copy from `.env.staging.example`, **not** from `.env.production`. |
 | `/opt/cdcf-auth/auth/setup-*.sh` | Bootstrap + provisioning scripts. |
 | `/opt/cdcf-auth/auth/backup/pg-dump.sh` | Daily backup job (host `pg_dump`, not docker exec). |
 | `/opt/cdcf-auth/runtime/zitadel-data/` | Zitadel's bind-mounted data dir. PAT lands here on first boot. World-writable (scratch-image constraint). |
