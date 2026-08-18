@@ -185,6 +185,51 @@ on a `governance_body` is a per-person operator action keyed to a Zitadel `sub`
 
 The Zitadel script prints handoff values per property at the end (issuer, org ID, project ID, app/client IDs, and — for confidential clients like CDCF — the **one-time client secret**). The OpenFGA script prints store ID + model ID. Use those values to write `handoffs/<property>.md` per the template in `handoffs/README.md`. **The CDCF client secret is unrecoverable** once the run finishes — capture it from the script output and store it in the consumer repo's deploy env at the moment of first provisioning.
 
+## `--target local`: one env file per property
+
+`--target production` and `--target staging` both name a single instance — the one on the VPS. **`--target local` does not.** Every umbrella property runs its own local Zitadel in its own compose stack, so "local" means a different instance depending on which property you are working on:
+
+| Property | Local issuer | PAT location |
+| --- | --- | --- |
+| `cdcf-website` | `http://localhost:8090` | `cdcf-website/.zitadel-data/automation-user.pat` |
+| `martyrology-api` | `http://localhost:8080` | `martyrology-api/.zitadel-data/automation-user.pat` |
+| `martyrology-frontend` | own stack | `martyrology-frontend/.zitadel-data/automation-user.pat` |
+
+So use one env file per property, and name it after the property:
+
+```bash
+ENV_FILE=.env.local.cdcf-website \
+  ./setup-zitadel.sh --target local --create-orgs --provision-cdcf-website
+```
+
+`ENV_FILE` needs no code change — it has always overridden the `.env.$target` default. `.gitignore`'s `.env.*` already covers `.env.local.<property>`, so these files never land in git.
+
+### Why not one shared `.env.local`
+
+Because the failure is silent rather than loud. With a single `.env.local`, whichever property you configured last wins. Run `--provision-martyrology` while it still points at cdcf-website's instance and Martyrology's Project, roles and OIDC app are created **inside cdcf-website's local Zitadel** — and nothing errors. That PAT is a valid `IAM_OWNER` for the instance it belongs to, so every API call succeeds and the output looks completely normal. Both instances are "local", so there is no target name to tip you off either.
+
+### The guard
+
+`setup-zitadel.sh` refuses that combination rather than trusting the convention to be followed. Local stacks keep their PAT at `<property>/.zitadel-data/automation-user.pat`, so the script reads the owning property out of the PAT's own path and compares it against the property each action provisions:
+
+```text
+[setup-zitadel] Target: local (issuer: http://localhost:8090, internal: http://127.0.0.1:8090)
+[setup-zitadel] PAT file: /home/you/dev/cdcf-website/.zitadel-data/automation-user.pat
+[setup-zitadel] Local property: cdcf-website
+    ✗ --provision-martyrology provisions martyrology-api, but the resolved PAT belongs to cdcf-website.
+    ⚠   Fix: ENV_FILE=.env.local.martyrology-api ./setup-zitadel.sh --target local --provision-martyrology
+```
+
+Exit code **17**, before anything is written. Three details worth knowing:
+
+- **Instance-wide actions are exempt.** `--create-orgs`, `--create-org` and `--rename-bootstrap-admin` act on the instance rather than a property, and `--create-orgs` is a prerequisite for provisioning a fresh local stack at all, so none of them are guarded.
+- **LitCal skips on local, it does not refuse.** There is no LitCal local stack here — `--provision-litcal` and `--provision-litcal-frontend` both warn and exit 0, naming `LiturgicalCalendarAPI/scripts/setup-zitadel.sh`, which is what provisions LitCal locally. That keeps `--target local --all` sweeping, per the skip contract in `--help`.
+- **`--target local --all` is refused**, because a sweep spans properties and no single PAT can be right for all of them. Provision one property at a time on local.
+
+`ZITADEL_ALLOW_FOREIGN_PAT=1` overrides the check for a layout that keeps its PAT somewhere other than `<property>/.zitadel-data/`. The guard never applies to staging or production, where the target does identify the instance.
+
+`setup-zitadel.selftest.sh` covers all of the above; run `./auth/setup-zitadel.selftest.sh` after touching any of it.
+
 ## Plesk-side setup
 
 Two subdomains + two Plesk Docker Proxy Rules (one per subdomain). DNS + Let's Encrypt set up in the standard Plesk UI; routing is handled by Tools & Settings → Docker → Proxy Rules (NOT by "Additional nginx directives", which gets shadowed by Plesk's default `location /` going to Apache).
@@ -243,6 +288,7 @@ The dedicated user is the principle-of-least-privilege boundary. Even if `VPS_SS
 1. Decide whether the property gets its own Zitadel Org (per-property isolation, default) or fits under an existing Org.
 2. Pre-provision the Org via `setup-zitadel.sh --target production --create-org <NAME>` if it doesn't exist.
 3. Add provisioning logic to `setup-zitadel.sh` (a new `do_provision_<property>` function mirroring `do_provision_litcal`) that creates the Project + roles + OIDC app(s) the property needs. Roles + OIDC app config should be lifted from the property's own dev compose / config to ensure exact parity.
+   - If the property runs a **local Zitadel stack**, add its action to the `action_property` table so the cross-provisioning guard covers it, and document its `.env.local.<property>` in [`--target local`](#--target-local-one-env-file-per-property) above. An action missing from that table is silently unguarded on local.
 4. For OpenFGA-using properties:
    - Drop the authorization model JSON into `auth/models/<StoreName>.json`.
    - If the model is inert without structural tuples (as `Martyrology` is), add them to `auth/models/<StoreName>.tuples.json` — an object with a `tuples` array of `{"user","relation","object"}` entries. Structural wiring only; never human role grants.
