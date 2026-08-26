@@ -357,6 +357,54 @@ expect 0 has "LiturgicalCalendarAPI/scripts/setup-zitadel.sh" \
     "local skips and names the script that DOES provision it" -- \
     --target local --provision-litcal-frontend
 
+echo "${B}[selftest]${N} --- UnitTestInterface: one app, both remote targets, JWT tokens ---"
+
+expect 0 has "https://litcal-tests.johnromanodorazio.com/auth/callback.php" \
+    "production registers the tests callback" -- \
+    --target production --provision-litcal-tests-ui
+
+# Not target-scoped, unlike the frontend: one deployment, one origin, so both remote
+# targets write the same value and neither can strip the other. This asserts staging
+# registers it too -- if it did not, the app would be converged by only one target and
+# a staging run would silently leave it on whatever it had drifted to.
+expect 0 has "https://litcal-tests.johnromanodorazio.com/auth/callback.php" \
+    "staging registers the SAME tests callback -- the app is not target-scoped" -- \
+    --target staging --provision-litcal-tests-ui
+
+expect 0 lacks "litcal-staging" \
+    "the tests app never picks up the frontend's staging origin" -- \
+    --target staging --provision-litcal-tests-ui
+
+expect 0 has "LiturgicalCalendarAPI/scripts/setup-zitadel.sh" \
+    "local skips and names the script that DOES provision it" -- \
+    --target local --provision-litcal-tests-ui
+
+# The whole point of the action. The live app was hand-created in the console and so
+# carried Zitadel's defaults -- an opaque access token, every assertion off -- which left
+# UnitTestInterface unable to authenticate at all: its TokenValidator rejects a non-JWT
+# structurally and falls back to an endpoint that refuses Zitadel tokens, giving a 401.
+expect_payload CreateApplication has '"accessTokenType": "OIDC_TOKEN_TYPE_JWT"' \
+    "the tests app is created with JWT access tokens, never Zitadel's opaque default" -- \
+    --target production --provision-litcal-tests-ui
+
+for assertion in idTokenRoleAssertion accessTokenRoleAssertion idTokenUserinfoAssertion; do
+    expect_payload CreateApplication has "\"$assertion\": true" \
+        "the tests app is created with $assertion, matching the frontend" -- \
+        --target production --provision-litcal-tests-ui
+done
+
+# The adoption path: the app already exists on the live instance under this exact name,
+# so a run must converge it through UpdateApplication rather than create a second one.
+existing_apps "UnitTestInterface"
+expect_payload UpdateApplication has '"accessTokenType": "OIDC_TOKEN_TYPE_JWT"' \
+    "an EXISTING tests app is converged to JWT -- this is what repairs the hand-made one" -- \
+    --target production --provision-litcal-tests-ui
+
+expect_payload UpdateApplication has '"accessTokenRoleAssertion": true' \
+    "an existing tests app is converged to accessTokenRoleAssertion too" -- \
+    --target production --provision-litcal-tests-ui
+existing_apps
+
 echo "${B}[selftest]${N} --- CDCF: one app per environment, no localhost in production Zitadel ---"
 
 expect 0 has "http://localhost:3000/api/auth/callback/zitadel" \

@@ -154,7 +154,8 @@ curl -s http://127.0.0.1:8081/healthz       # OpenFGA → 200
 #      automation-user.pat  - IAM_OWNER, used by setup-zitadel.sh and our own admin scripts
 #      login-client.pat     - IAM_LOGIN_CLIENT, consumed by the zitadel-login container
 #    Run the bootstrap scripts (--all does rename-bootstrap-admin + create-orgs
-#    + provision-litcal + provision-litcal-frontend + provision-cdcf-website
+#    + provision-litcal + provision-litcal-frontend
+#    + provision-litcal-tests-ui + provision-cdcf-website
 #    + provision-martyrology):
 cd /opt/cdcf-auth/auth
 ./setup-zitadel.sh   --target production --all
@@ -235,7 +236,7 @@ It is an **allow-list per action, not one property per action**, because a stack
 Three more details worth knowing:
 
 - **Instance-wide actions are exempt.** `--create-orgs`, `--create-org` and `--rename-bootstrap-admin` act on the instance rather than a property, and `--create-orgs` is a prerequisite for provisioning a fresh local stack at all, so none of them are guarded.
-- **LitCal skips on local, it does not refuse.** There is no LitCal local stack here — `--provision-litcal` and `--provision-litcal-frontend` both warn and exit 0, naming `LiturgicalCalendarAPI/scripts/setup-zitadel.sh`, which is what provisions LitCal locally. That keeps `--target local --all` sweeping, per the skip contract in `--help`.
+- **LitCal skips on local, it does not refuse.** There is no LitCal local stack here — `--provision-litcal`, `--provision-litcal-frontend` and `--provision-litcal-tests-ui` all warn and exit 0, naming `LiturgicalCalendarAPI/scripts/setup-zitadel.sh`, which is what provisions LitCal locally. That keeps `--target local --all` sweeping, per the skip contract in `--help`.
 - **`--target local --all` is refused**, because a sweep spans properties and no single PAT can be right for all of them. Provision one property at a time on local.
 
 `ZITADEL_ALLOW_FOREIGN_PAT=1` overrides the check for a layout that keeps its PAT somewhere other than `<property>/.zitadel-data/`. The guard never applies to staging or production, where the target does identify the instance.
