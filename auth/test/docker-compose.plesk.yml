@@ -1,0 +1,77 @@
+# Local simulation of the reverse-proxy portion of the Plesk deployment.
+# Use together with docker-compose.yml; this is not Plesk itself.
+
+services:
+  zitadel-runtime-init:
+    image: alpine:3.22
+    command: [sh, -c, chmod 0777 /zitadel-data]
+    volumes:
+      - zitadel-runtime-data:/zitadel-data
+    restart: 'no'
+
+  zitadel:
+    depends_on:
+      zitadel-runtime-init:
+        condition: service_completed_successfully
+    environment:
+      ZITADEL_EXTERNALDOMAIN: localhost
+      ZITADEL_EXTERNALPORT: '8090'
+      ZITADEL_EXTERNALSECURE: 'false'
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: 'true'
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: http://localhost:8090/ui/v2/login
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: http://localhost:8090/ui/v2/login/login?authRequest=
+      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: http://localhost:8090/ui/v2/login/logout?post_logout_redirect=
+      ZITADEL_SAML_DEFAULTLOGINURLV2: http://localhost:8090/ui/v2/login/login?samlRequest=
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME: login-client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: Local Login V2 Client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE: '2099-12-31T23:59:59Z'
+      ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH: /zitadel-data/login-client.pat
+    volumes:
+      - zitadel-runtime-data:/zitadel-data
+
+  zitadel-login:
+    image: ghcr.io/zitadel/zitadel-login:v4.15.0
+    depends_on:
+      zitadel:
+        condition: service_healthy
+    environment:
+      ZITADEL_API_URL: http://zitadel:8080
+      NEXT_PUBLIC_BASE_PATH: /ui/v2/login
+      ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel-data/login-client.pat
+      CUSTOM_REQUEST_HEADERS: 'Host:localhost:8090'
+      EMAIL_VERIFICATION: 'true'
+    volumes:
+      - zitadel-runtime-data:/zitadel-data:ro
+    healthcheck:
+      test:
+        - CMD
+        - /bin/sh
+        - -c
+        - node /app/healthcheck.mjs http://localhost:3000/ui/v2/login/healthy
+      interval: 10s
+      timeout: 30s
+      retries: 12
+      start_period: 20s
+
+  plesk-proxy:
+    image: nginx:alpine
+    depends_on:
+      zitadel:
+        condition: service_healthy
+      zitadel-login:
+        condition: service_healthy
+    volumes:
+      - ./nginx.plesk-local.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - '127.0.0.1:8090:80'
+    healthcheck:
+      # Use IPv4 explicitly: BusyBox wget resolves localhost to ::1 first,
+      # while nginx listens on IPv4 in this local configuration.
+      test: [CMD, wget, --quiet, --spider, http://127.0.0.1/debug/ready]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  zitadel-runtime-data:
