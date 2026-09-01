@@ -42,7 +42,7 @@ services:
       interval: 10s
       timeout: 30s
       retries: 12
-      start_period: 20s
+      start_period: 120s
     command: start-from-init --masterkeyFromEnv
     environment:
       # Database — points at host Postgres (see README "Prerequisites")
@@ -165,7 +165,7 @@ services:
       zitadel:
         condition: service_healthy
       zitadel-login:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       # Use IPv4 explicitly: BusyBox wget may resolve localhost to ::1,
       # while this nginx configuration listens on IPv4.

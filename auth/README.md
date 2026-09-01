@@ -7,52 +7,6 @@ Shared identity (Zitadel) and relationship-based authorization (OpenFGA) for the
 
 Both run as containers on the existing cdcf-website Plesk VPS via the Plesk Docker extension. Plesk terminates TLS upstream via Let's Encrypt; containers bind to `127.0.0.1` only and are reverse-proxied by Plesk's nginx. **Both services persist to the host's native PostgreSQL** — no containerized DBs in this stack.
 
-## Quick local smoke test
-
-`test/docker-compose.yml` starts an isolated local stack with two containerized PostgreSQL
-databases and deliberately non-secret development credentials. It does not use
-`.env.production` and must not be exposed outside the local machine.
-
-```bash
-cd auth/test
-docker compose up -d --wait
-
-curl http://localhost:8080/debug/ready
-curl -H 'Authorization: Bearer local-openfga-api-key' \
-  http://localhost:8081/healthz
-```
-
-Zitadel is available at `http://localhost:8080` with
-`admin@example.test` / `LocalTest1!`. OpenFGA's API is available at
-`http://localhost:8081` with the local bearer key shown above. Its playground
-is disabled because OpenFGA only supports the playground when authentication
-is disabled.
-
-Stop the stack while keeping its test data with
-`docker compose down`. To also reset both local databases, use
-`docker compose down -v`.
-
-### Local Plesk proxy simulation
-
-The optional `test/docker-compose.plesk.yml` overlay adds Login V2 and an nginx
-reverse proxy that reproduces Plesk's relevant routing locally. It does not run
-Plesk itself and does not reproduce Plesk-managed TLS or VPS permissions.
-
-Login V2 is configured during Zitadel's first boot, so start this variant with
-fresh local test volumes:
-
-```bash
-cd auth/test
-docker compose down -v
-docker compose -f docker-compose.yml -f docker-compose.plesk.yml up -d --wait
-
-curl http://localhost:8090/debug/ready
-```
-
-Open `http://localhost:8090/ui/console/` to test the admin login through the
-local proxy. The direct Zitadel port `http://localhost:8080` remains available
-for diagnostics; OpenFGA remains at `http://localhost:8081`.
-
 ## Canonical VPS layout
 
 | Path on VPS | Contents |
