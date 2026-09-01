@@ -116,7 +116,7 @@ Actions:
                               romanmartyrology.com on production. Skips on staging
                               (no Martyrology staging deployment yet).
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
-  --all                       Above seven in dependency order
+  --all                       Above eight in dependency order
 
 Environment variables (sourced from .env.\$target):
   ZITADEL_ISSUER                 (default: https://auth.catholicdigitalcommons.org)
