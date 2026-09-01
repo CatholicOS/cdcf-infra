@@ -27,6 +27,13 @@
 #                              app for the frontend, with prod + staging
 #                              callbacks registered. Requires --provision-litcal
 #                              to have run (or be running together).
+#   --provision-litcal-tests-ui
+#                              Under the same Project, create a Web/PKCE OIDC
+#                              app for the UnitTestInterface accuracy-test UI.
+#                              Named -tests-ui, not -tests: the handoff notes
+#                              reserve --provision-litcal-tests for a machine
+#                              user (test service account), which is a different
+#                              principal entirely. Requires --provision-litcal.
 #   --provision-cdcf-website   Under the CDCF Org, create the "CDCF Website"
 #                              Project + the WP-mirrored roles in CDCF_ROLES
 #                              (subscriber/contributor/author/editor/
@@ -95,6 +102,9 @@ Actions:
                               App AND origin follow --target: separate apps for
                               production and staging. Skips on local (that
                               instance is provisioned by the LitCal API repo).
+  --provision-litcal-tests-ui Provision the UnitTestInterface OIDC app (Web/PKCE).
+                              One app and one origin, so unlike the frontend it
+                              is NOT target-scoped; skips on local.
   --provision-cdcf-website    Provision CDCF Website Project + roles + Web OIDC app (client_secret_post).
                               App AND origin follow --target: "CDCF Website" on
                               production, "CDCF Website (Non-Prod)" on staging,
@@ -106,7 +116,7 @@ Actions:
                               romanmartyrology.com on production. Skips on staging
                               (no Martyrology staging deployment yet).
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
-  --all                       Above seven in dependency order
+  --all                       Above eight in dependency order
 
 Environment variables (sourced from .env.\$target):
   ZITADEL_ISSUER                 (default: https://auth.catholicdigitalcommons.org)
@@ -162,11 +172,12 @@ while [[ $# -gt 0 ]]; do
         --create-org)                [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || usage; ACTIONS+=("create-org:$2"); shift 2 ;;
         --provision-litcal)          ACTIONS+=("provision-litcal"); shift ;;
         --provision-litcal-frontend) ACTIONS+=("provision-litcal-frontend"); shift ;;
+        --provision-litcal-tests-ui) ACTIONS+=("provision-litcal-tests-ui"); shift ;;
         --provision-cdcf-website)    ACTIONS+=("provision-cdcf-website"); shift ;;
         --provision-martyrology)     ACTIONS+=("provision-martyrology"); shift ;;
         --provision-martyrology-frontend) ACTIONS+=("provision-martyrology-frontend"); shift ;;
         --rename-bootstrap-admin)    ACTIONS+=("rename-bootstrap-admin"); shift ;;
-        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend" "provision-cdcf-website" "provision-martyrology" "provision-martyrology-frontend"); shift ;;
+        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend" "provision-litcal-tests-ui" "provision-cdcf-website" "provision-martyrology" "provision-martyrology-frontend"); shift ;;
         -h|--help)                   usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
     esac
@@ -507,6 +518,39 @@ case "$TARGET" in
 esac
 LITCAL_FRONTEND_CALLBACK_PATH="/auth/callback.php"
 
+# UnitTestInterface — the accuracy-test UI at litcal-tests, a sibling of the
+# frontend under the same Project.
+#
+# Deliberately NOT target-scoped, unlike the frontend above. There is exactly one
+# deployment of this UI and therefore one origin, so a production run and a staging
+# run would send an identical redirectUris array. The reason the frontend needs
+# separate apps per target — that UpdateApplication REPLACES the registered set, so
+# one target's run would strip the other's callback — cannot arise where both runs
+# write the same single value. Registering it under both targets means whichever
+# target is run next converges this app, rather than it being covered by only one.
+#
+# `local` still registers nothing, for the same reason the frontend skips it: that
+# instance is provisioned by LiturgicalCalendarAPI/scripts/setup-zitadel.sh, which
+# creates its own app under the name "LiturgicalCalendar Tests".
+#
+# The name matches the app that already exists on the live instance, which is what
+# makes this ADOPT it rather than create a second one beside it. That app was created
+# by hand in the console and so carried Zitadel's defaults — an opaque access token and
+# every assertion off — which left UTI unable to authenticate at all: its TokenValidator
+# rejects a non-JWT structurally, falls back to the API's HS256-only /auth/me, and gets a
+# 401. Running this action converges it to the same JWT + assertions the frontend has had
+# all along.
+case "$TARGET" in
+    production|staging)
+        LITCAL_TESTS_URLS=("https://litcal-tests.johnromanodorazio.com")
+        ;;
+    *)
+        LITCAL_TESTS_URLS=()
+        ;;
+esac
+LITCAL_TESTS_APP_NAME="UnitTestInterface"
+LITCAL_TESTS_CALLBACK_PATH="/auth/callback.php"
+
 # x-zitadel-orgid header lets a PAT operate on a different org than its home org.
 # Wrapped zapi variant for org-scoped management API calls.
 zapi_org() {
@@ -798,6 +842,47 @@ do_provision_litcal_frontend() {
     for url in "${LITCAL_FRONTEND_URLS[@]}"; do echo "#   $url$LITCAL_FRONTEND_CALLBACK_PATH"; done
     echo "# Registered post-logout URIs:"
     for url in "${LITCAL_FRONTEND_URLS[@]}"; do echo "#   $url"; done
+    echo
+}
+
+do_provision_litcal_tests_ui() {
+    log "Provisioning UnitTestInterface OIDC app"
+    # Skip before touching the API, so `--all --target local` sweeps past this
+    # action instead of registering an app with an empty redirect URI list.
+    no_origins_for_target "${#LITCAL_TESTS_URLS[@]}" "$TARGET" \
+        "LitCal's local Zitadel is provisioned by the API repo, not this script:" \
+        "  LiturgicalCalendarAPI/scripts/setup-zitadel.sh creates its own app" \
+        "  named \"LiturgicalCalendar Tests\", so a second provisioner here would" \
+        "  accumulate rather than converge." \
+        "Use --target staging or --target production here." && return 0
+    local org_id project_id
+    org_id=$(find_org_id "LiturgicalCalendar")
+    [[ -z "$org_id" ]] && { err "LiturgicalCalendar Org not found. Run --create-orgs first."; exit 11; }
+    project_id=$(find_project_id "$org_id" "$LITCAL_PROJECT_NAME")
+    [[ -z "$project_id" ]] && { err "Project $LITCAL_PROJECT_NAME not found. Run --provision-litcal first."; exit 12; }
+
+    local redirect_uris_json post_logout_uris_json
+    redirect_uris_json=$(printf '%s\n' "${LITCAL_TESTS_URLS[@]}" \
+        | jq -R --arg cb "$LITCAL_TESTS_CALLBACK_PATH" '. + $cb' | jq -s '.')
+    post_logout_uris_json=$(printf '%s\n' "${LITCAL_TESTS_URLS[@]}" | jq -R '.' | jq -s '.')
+
+    local app_info app_id client_id _client_secret
+    app_info=$(create_oidc_web_app "$project_id" "$LITCAL_TESTS_APP_NAME" \
+        "$redirect_uris_json" "$post_logout_uris_json")
+    # PKCE (default auth_method_type=NONE), so the secret field is always empty.
+    IFS='|' read -r app_id client_id _client_secret <<<"$app_info"
+
+    echo
+    echo "${B}=== UnitTestInterface handoff values ($LITCAL_TESTS_APP_NAME) ===${N}"
+    echo "ZITADEL_ISSUER=$ZITADEL_ISSUER"
+    echo "ZITADEL_PROJECT_ID=$project_id"
+    echo "ZITADEL_TESTS_APP_ID=$app_id"
+    echo "ZITADEL_CLIENT_ID=$client_id"
+    echo "# No client secret — PKCE (auth_method_type=NONE)"
+    echo "# Registered redirect URIs:"
+    for url in "${LITCAL_TESTS_URLS[@]}"; do echo "#   $url$LITCAL_TESTS_CALLBACK_PATH"; done
+    echo "# Registered post-logout URIs:"
+    for url in "${LITCAL_TESTS_URLS[@]}"; do echo "#   $url"; done
     echo
 }
 
@@ -1208,6 +1293,7 @@ for action in "${ACTIONS[@]}"; do
         create-org)                 do_create_org "${action#*:}" ;;
         provision-litcal)           do_provision_litcal ;;
         provision-litcal-frontend)  do_provision_litcal_frontend ;;
+        provision-litcal-tests-ui)  do_provision_litcal_tests_ui ;;
         provision-cdcf-website)     do_provision_cdcf_website ;;
         provision-martyrology)      do_provision_martyrology ;;
         provision-martyrology-frontend) do_provision_martyrology_frontend ;;
