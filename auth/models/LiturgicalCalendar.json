@@ -109,36 +109,6 @@
       }
     },
     {
-      "type": "general_roman_calendar",
-      "relations": {
-        "admin": { "this": {} },
-        "editor": {
-          "union": {
-            "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "admin" } }
-            ]
-          }
-        },
-        "viewer": {
-          "union": {
-            "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "editor" } },
-              { "computedUserset": { "relation": "admin" } }
-            ]
-          }
-        }
-      },
-      "metadata": {
-        "relations": {
-          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
-          "editor": { "directly_related_user_types": [{ "type": "user" }] },
-          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
-        }
-      }
-    },
-    {
       "type": "rite_calendar",
       "relations": {
         "admin": { "this": {} },
@@ -200,36 +170,6 @@
     },
     {
       "type": "diocesan_calendar_test",
-      "relations": {
-        "admin": { "this": {} },
-        "editor": {
-          "union": {
-            "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "admin" } }
-            ]
-          }
-        },
-        "viewer": {
-          "union": {
-            "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "editor" } },
-              { "computedUserset": { "relation": "admin" } }
-            ]
-          }
-        }
-      },
-      "metadata": {
-        "relations": {
-          "admin":  { "directly_related_user_types": [{ "type": "user" }] },
-          "editor": { "directly_related_user_types": [{ "type": "user" }] },
-          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
-        }
-      }
-    },
-    {
-      "type": "general_roman_calendar_test",
       "relations": {
         "admin": { "this": {} },
         "editor": {

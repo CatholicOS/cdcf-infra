@@ -1,5 +1,5 @@
 {
-  "_comment": "Fixture for auth/validate-expectations.sh's own tests. Asserts exactly what auth/models/LiturgicalCalendar.json provides today: the eight deployed types, admin/editor/viewer on each calendar type plus member_nation on wider_region, test_definition and deleter forbidden, and the editor/viewer union rewrites.",
+  "_comment": "Fixture for auth/validate-expectations.sh's own tests. Asserts exactly what auth/models/LiturgicalCalendar.json provides today: the eight deployed types, admin/editor/viewer on each calendar type plus member_nation on wider_region, test_definition and both retired general_roman_calendar types forbidden, the deleter relation forbidden model-wide, and the editor/viewer union rewrites.",
   "consumer": "LiturgicalCalendarAPI",
   "store": "LiturgicalCalendar",
   "required_types": [
@@ -7,28 +7,68 @@
     "wider_region",
     "national_calendar",
     "diocesan_calendar",
-    "general_roman_calendar",
+    "rite_calendar",
     "national_calendar_test",
     "diocesan_calendar_test",
-    "general_roman_calendar_test"
+    "rite_calendar_test"
   ],
   "required_relations": {
-    "wider_region": ["admin", "editor", "viewer", "member_nation"],
-    "national_calendar": ["admin", "editor", "viewer"],
-    "diocesan_calendar": ["admin", "editor", "viewer"],
-    "general_roman_calendar": ["admin", "editor", "viewer"],
-    "national_calendar_test": ["admin", "editor", "viewer"],
-    "diocesan_calendar_test": ["admin", "editor", "viewer"],
-    "general_roman_calendar_test": ["admin", "editor", "viewer"]
+    "wider_region": [
+      "admin",
+      "editor",
+      "viewer",
+      "member_nation"
+    ],
+    "national_calendar": [
+      "admin",
+      "editor",
+      "viewer"
+    ],
+    "diocesan_calendar": [
+      "admin",
+      "editor",
+      "viewer"
+    ],
+    "rite_calendar": [
+      "admin",
+      "editor",
+      "viewer"
+    ],
+    "national_calendar_test": [
+      "admin",
+      "editor",
+      "viewer"
+    ],
+    "diocesan_calendar_test": [
+      "admin",
+      "editor",
+      "viewer"
+    ],
+    "rite_calendar_test": [
+      "admin",
+      "editor",
+      "viewer"
+    ]
   },
-  "forbidden_types": ["test_definition"],
+  "forbidden_types": [
+    "general_roman_calendar",
+    "general_roman_calendar_test",
+    "test_definition"
+  ],
   "forbidden_relations": {
-    "*": ["deleter"]
+    "*": [
+      "deleter"
+    ]
   },
   "relation_includes": {
     "*": {
-      "editor": ["admin"],
-      "viewer": ["admin", "editor"]
+      "editor": [
+        "admin"
+      ],
+      "viewer": [
+        "admin",
+        "editor"
+      ]
     }
   }
 }
