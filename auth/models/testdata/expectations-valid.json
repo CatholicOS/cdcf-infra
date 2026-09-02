@@ -7,8 +7,10 @@
     "wider_region",
     "national_calendar",
     "diocesan_calendar",
+    "rite_calendar",
     "national_calendar_test",
-    "diocesan_calendar_test"
+    "diocesan_calendar_test",
+    "rite_calendar_test"
   ],
   "required_relations": {
     "wider_region": [
@@ -27,12 +29,22 @@
       "editor",
       "viewer"
     ],
+    "rite_calendar": [
+      "admin",
+      "editor",
+      "viewer"
+    ],
     "national_calendar_test": [
       "admin",
       "editor",
       "viewer"
     ],
     "diocesan_calendar_test": [
+      "admin",
+      "editor",
+      "viewer"
+    ],
+    "rite_calendar_test": [
       "admin",
       "editor",
       "viewer"
