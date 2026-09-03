@@ -418,6 +418,18 @@ The script `auth/backup/pg-dump.sh` produces gzipped pg_dump output of the auth 
 15 3 * * * /opt/cdcf-auth/auth/backup/pg-dump.sh >> /var/log/cdcf-auth-backup.log 2>&1
 ```
 
+**Run it detached when running it by hand.** A multi-GB dump outlives a flaky SSH
+session, and a disconnect takes the script with it:
+
+```bash
+sudo setsid nohup /opt/cdcf-auth/auth/backup/pg-dump.sh > /tmp/bk-run.log 2>&1 < /dev/null &
+```
+
+Cron is unaffected — it never had a terminal to lose. Dumps are written to a `.part`
+name and renamed only when complete, so an interrupted run leaves no file that could
+be mistaken for a good backup; the partial is removed on exit, and anything a SIGKILL
+left behind is swept by the next run.
+
 Dumps land in `/var/backups/cdcf-auth/` and are then copied off-server over SFTP, to the same host Plesk's own backups use (`SFTP_*` in `.env.production`). The push is part of the script rather than a follow-on step: a dump that never leaves the machine does not survive the failure it exists for.
 
 **Plesk's backups do NOT cover these databases, and cannot be made to.** Plesk backs up what is in its own registry, and every database there is MySQL; `zitadel` and `openfga` are host PostgreSQL databases it has no knowledge of. This script is the only thing backing them up. The same was true of `litcal_staging` and `litcal_production` until they were added to `PEER_DBS`; `bibleget_dev` and the `marriage_booklet_*` set are still uncovered.
