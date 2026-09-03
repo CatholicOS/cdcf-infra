@@ -430,7 +430,17 @@ Set `SFTP_HOST=` (empty) to disable the push and keep dumps local only, which is
 
 `zitadel` and `openfga` are dumped with the passwords in `.env.production`. The `PEER_DBS` databases are dumped through the local `postgres` superuser instead: their credentials live in the API's own env file on a different vhost, and copying a second service's password in here — to reach a database the local superuser already can — would only create another credential to rotate. A `PEER_DBS` name that does not exist is a hard error, checked before anything is written, so a typo cannot leave a half-finished run.
 
-> **Still not covered:** other host PostgreSQL databases — notably `bibleget_dev` (4.7 GB) and the `marriage_booklet_*` set — have no backup. They belong to other properties and are out of this stack's scope, but nothing else is backing them up either.
+Large databases (`LARGE_DBS`) are handled differently from the rest: dumped at `LARGE_GZIP_LEVEL` under `nice`/`ionice`, and **deleted locally once the off-server copy is confirmed**. `/var/backups` cannot hold a 14-day window of multi-GB dumps, and `gzip -9` over several GB is heavy enough to disturb the host — measured on `bibleget_dev` (4.7 GB), it was enough to drop an SSH session. The remote keeps their history; a restore of one fetches from there.
+
+**Host configuration** (`CONFIG_PATHS`) is archived alongside the dumps and is **always age-encrypted**; the script refuses to run if `AGE_RECIPIENT` is unset. This is not ceremony: `ZITADEL_MASTERKEY` lives in `/opt/cdcf-auth/auth/.env.production`, and the `zitadel` dump it decrypts is going to the same destination. Encrypting to a key whose private half never touches the server is what keeps that co-location from undoing the "back the masterkey up separately" rule.
+
+Plesk **does** back up the vhost env files — verified by extracting an actual backup archive, which contains `httpdocs/LiturgicalCalendar/.env.production` and `api/dev/.env.staging`. `CONFIG_PATHS` is only for what Plesk cannot reach: `/opt`, `/etc`, and the service PATs under `runtime/zitadel-data/`.
+
+To restore the config archive:
+
+```bash
+age -d -i cdcf-backup.key config-<ts>.tar.gz.age | tar -xz -C /
+```
 
 **Critical**: the `ZITADEL_MASTERKEY` is NOT in pg_dump. Without it, the dump is mathematically unrecoverable (secrets in events are encrypted). Back up the masterkey separately, out-of-band, in your password manager.
 
