@@ -10,6 +10,14 @@
 # /var/backups/cdcf-auth/, named with the UTC date, then copies them
 # off-server over SFTP when SFTP_HOST is set.
 #
+# PEER_DBS names further databases to dump on the same host through the
+# local `postgres` superuser role instead of a per-service password —
+# `litcal_staging` and `litcal_production` in production. They are dumped
+# this way because their credentials live in the API's own env file on a
+# different vhost, and copying a second service's password into this one
+# to read a database the local superuser can already reach would create a
+# credential to rotate for no gain.
+#
 # Wire into cron:
 #   15 3 * * * /opt/cdcf-auth/auth/backup/pg-dump.sh >> /var/log/cdcf-auth-backup.log 2>&1
 #
@@ -44,6 +52,10 @@ RETENTION_DAYS="${RETENTION_DAYS:-14}"
 PG_HOST="${PG_HOST:-localhost}"
 PG_PORT="${PG_PORT:-5432}"
 
+# Databases dumped via the local `postgres` superuser (peer auth) rather
+# than a password from ENV_FILE. Space-separated; empty disables.
+PEER_DBS="${PEER_DBS:-}"
+
 # Off-server copy. Empty SFTP_HOST disables the push entirely.
 SFTP_HOST="${SFTP_HOST:-}"
 SFTP_PORT="${SFTP_PORT:-22}"
@@ -67,8 +79,38 @@ dump_one() {
     echo "wrote $out ($(du -h "$out" | cut -f1))"
 }
 
+# Dumps a database through the local `postgres` role. `sudo -n` so a missing
+# sudo right fails immediately and visibly rather than hanging on a prompt
+# under cron.
+dump_peer() {
+    local db="$1"
+    local out="$BACKUP_DIR/${db}-${ts}.sql.gz"
+    sudo -n -u postgres pg_dump \
+        --dbname="$db" --format=plain --no-owner --no-privileges \
+        | gzip -9 > "$out"
+    echo "wrote $out ($(du -h "$out" | cut -f1))"
+}
+
+# Preflight, BEFORE anything is written: a PEER_DBS entry that does not exist
+# is a configuration error, and finding out halfway through would leave a run
+# that dumped some databases, pushed none, and exited non-zero. Checking first
+# means the job either does all of its work or none of it.
+if [[ -n "$PEER_DBS" ]]; then
+    for db in $PEER_DBS; do
+        if ! sudo -n -u postgres psql -Atqc \
+                "SELECT 1 FROM pg_database WHERE datname = '$db'" | grep -q 1; then
+            echo "PEER_DBS names '$db', which does not exist on $PG_HOST" >&2
+            exit 1
+        fi
+    done
+fi
+
 dump_one "$ZITADEL_DB_USER" "$ZITADEL_DB_NAME" "$ZITADEL_DB_PASSWORD"
 dump_one "$OPENFGA_DB_USER" "$OPENFGA_DB_NAME" "$OPENFGA_DB_PASSWORD"
+
+for db in $PEER_DBS; do
+    dump_peer "$db"
+done
 
 # --- off-server copy ---------------------------------------------------
 #
