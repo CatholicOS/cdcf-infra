@@ -95,13 +95,32 @@ ts="$(date -u +%Y%m%d-%H%M%S)"
 ARTIFACTS=()
 EPHEMERAL=()
 
+# The artifact currently being written, if any. Dumps land on a `.part` name
+# and are renamed only once complete, so an interrupted run can never leave a
+# truncated file that looks like a finished one — `gzip` output is valid right
+# up until it is not, and a half-written multi-GB dump is indistinguishable
+# from a good one by size alone.
+CURRENT_PART=""
+cleanup_partial() {
+    [[ -n "$CURRENT_PART" && -e "$CURRENT_PART" ]] || return 0
+    rm -f "$CURRENT_PART"
+    echo "removed incomplete $(basename "$CURRENT_PART")" >&2
+}
+trap cleanup_partial EXIT
+
+# A SIGKILL skips the trap above, so also sweep anything a previous run left.
+# Only cron runs this, and never concurrently, so nothing here can be in flight.
+find "$BACKUP_DIR" -name '*.part' -delete 2>/dev/null || true
+
 dump_one() {
     local user="$1" db="$2" password="$3"
     local out="$BACKUP_DIR/${db}-${ts}.sql.gz"
+    CURRENT_PART="$out.part"
     PGPASSWORD="$password" pg_dump \
         --host="$PG_HOST" --port="$PG_PORT" --username="$user" \
         --dbname="$db" --format=plain --no-owner --no-privileges \
-        | gzip -9 > "$out"
+        | gzip -9 > "$CURRENT_PART"
+    mv "$CURRENT_PART" "$out"; CURRENT_PART=""
     ARTIFACTS+=("$out")
     echo "wrote $out ($(du -h "$out" | cut -f1))"
 }
@@ -112,10 +131,12 @@ dump_one() {
 dump_peer() {
     local db="$1"
     local out="$BACKUP_DIR/${db}-${ts}.sql.gz"
+    CURRENT_PART="$out.part"
     sudo -n -u postgres pg_dump \
         --port="$PG_PORT" \
         --dbname="$db" --format=plain --no-owner --no-privileges \
-        | gzip -9 > "$out"
+        | gzip -9 > "$CURRENT_PART"
+    mv "$CURRENT_PART" "$out"; CURRENT_PART=""
     ARTIFACTS+=("$out")
     echo "wrote $out ($(du -h "$out" | cut -f1))"
 }
@@ -131,10 +152,12 @@ dump_peer() {
 dump_large() {
     local db="$1"
     local out="$BACKUP_DIR/${db}-${ts}.sql.gz"
+    CURRENT_PART="$out.part"
     nice -n 19 ionice -c3 sudo -n -u postgres pg_dump \
         --port="$PG_PORT" \
         --dbname="$db" --format=plain --no-owner --no-privileges \
-        | nice -n 19 gzip -"$LARGE_GZIP_LEVEL" > "$out"
+        | nice -n 19 gzip -"$LARGE_GZIP_LEVEL" > "$CURRENT_PART"
+    mv "$CURRENT_PART" "$out"; CURRENT_PART=""
     ARTIFACTS+=("$out")
     EPHEMERAL+=("$out")
     echo "wrote $out ($(du -h "$out" | cut -f1)) [large: local copy removed after push]"
@@ -147,6 +170,7 @@ dump_large() {
 # encryption is what keeps putting both in one place from being a mistake.
 archive_config() {
     local out="$BACKUP_DIR/config-${ts}.tar.gz.age"
+    CURRENT_PART="$out.part"
     local missing=()
     local p
 
@@ -161,7 +185,8 @@ archive_config() {
     # tar reads through the paths as root; age encrypts before anything
     # touches the disk, so no cleartext copy of the secrets is ever written.
     tar -czf - --absolute-names $CONFIG_PATHS 2>/dev/null \
-        | age -r "$AGE_RECIPIENT" > "$out"
+        | age -r "$AGE_RECIPIENT" > "$CURRENT_PART"
+    mv "$CURRENT_PART" "$out"; CURRENT_PART=""
     ARTIFACTS+=("$out")
     echo "wrote $out ($(du -h "$out" | cut -f1)) [age-encrypted]"
 }
