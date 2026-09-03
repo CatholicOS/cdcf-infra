@@ -441,8 +441,14 @@ confirm the offline key still decrypts it, which is the only part of this backup
 automated check can prove:
 
 ```bash
+set -o pipefail
 age -d -i cdcf-backup.key config-<ts>.tar.gz.age | tar -tz
 ```
+
+`pipefail` is load-bearing here, not boilerplate. Without it the pipeline reports
+`tar`'s status, and `tar` can list what it managed to read and exit 0 while `age`
+failed — so a truncated or undecryptable archive would look like a passing check,
+which is the one thing this command exists to rule out.
 
 `tar -t` lists and extracts nothing. Members are stored as absolute paths, so tar
 reports `Removing leading '/' from member names` — expected, and what makes the
@@ -451,11 +457,19 @@ staged restore below land in the right place.
 To restore, extract to a STAGING directory and copy back deliberately:
 
 ```bash
-mkdir -p /tmp/cfg-restore
-age -d -i cdcf-backup.key config-<ts>.tar.gz.age | tar -xz -C /tmp/cfg-restore
+set -o pipefail
+staging=$(mktemp -d)          # fresh, mode 700, not a predictable name
+age -d -i cdcf-backup.key config-<ts>.tar.gz.age | tar -xz -C "$staging"
 # then inspect, and copy only what you meant to restore, e.g.
-#   cp /tmp/cfg-restore/opt/cdcf-auth/auth/.env.production /opt/cdcf-auth/auth/
+#   cp "$staging/opt/cdcf-auth/auth/.env.production" /opt/cdcf-auth/auth/
+rm -rf "$staging"             # it held the masterkey in cleartext
 ```
+
+`mktemp -d` rather than a fixed `/tmp/cfg-restore`: this archive expands to
+`ZITADEL_MASTERKEY` and both service PATs in cleartext, and a predictable path in a
+world-writable directory can be pre-created by another local user, who would then own
+the directory the secrets land in. The staging copy is deleted afterwards for the same
+reason.
 
 Do **not** pipe straight into `tar -xz -C /`. That overwrites live configuration in
 place with whatever the archive holds — including a `.env.production` whose
