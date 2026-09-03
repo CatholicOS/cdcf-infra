@@ -412,7 +412,7 @@ This procedure is a candidate for promotion to a CLI script (e.g. `auth/setup-sm
 
 ### 7.1 Backups [👤 Manual setup, 🤖 cron-automated thereafter]
 
-The script `auth/backup/pg-dump.sh` produces gzipped pg_dump output of both DBs and prunes anything older than 14 days. Wire into cron:
+The script `auth/backup/pg-dump.sh` produces gzipped pg_dump output of the auth DBs (`zitadel`, `openfga`) plus everything named in `PEER_DBS` — `litcal_staging` and `litcal_production` in production — and prunes anything older than 14 days. Wire into cron:
 
 ```cron
 15 3 * * * /opt/cdcf-auth/auth/backup/pg-dump.sh >> /var/log/cdcf-auth-backup.log 2>&1
@@ -428,7 +428,9 @@ Failure behaviour is deliberate: a failed or incomplete upload exits non-zero an
 
 Set `SFTP_HOST=` (empty) to disable the push and keep dumps local only, which is the right setting anywhere but production.
 
-> **Not covered here:** `litcal_staging` and `litcal_production` are host PostgreSQL databases with no backup at all — `litcal_staging` holds the RBAC change requests, access requests and audit log. Bringing them into this script (or a sibling of it) is tracked separately.
+`zitadel` and `openfga` are dumped with the passwords in `.env.production`. The `PEER_DBS` databases are dumped through the local `postgres` superuser instead: their credentials live in the API's own env file on a different vhost, and copying a second service's password in here — to reach a database the local superuser already can — would only create another credential to rotate. A `PEER_DBS` name that does not exist is a hard error, checked before anything is written, so a typo cannot leave a half-finished run.
+
+> **Still not covered:** other host PostgreSQL databases — notably `bibleget_dev` (4.7 GB) and the `marriage_booklet_*` set — have no backup. They belong to other properties and are out of this stack's scope, but nothing else is backing them up either.
 
 **Critical**: the `ZITADEL_MASTERKEY` is NOT in pg_dump. Without it, the dump is mathematically unrecoverable (secrets in events are encrypted). Back up the masterkey separately, out-of-band, in your password manager.
 
