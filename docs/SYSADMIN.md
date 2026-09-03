@@ -436,11 +436,31 @@ Large databases (`LARGE_DBS`) are handled differently from the rest: dumped at `
 
 Plesk **does** back up the vhost env files — verified by extracting an actual backup archive, which contains `httpdocs/LiturgicalCalendar/.env.production` and `api/dev/.env.staging`. `CONFIG_PATHS` is only for what Plesk cannot reach: `/opt`, `/etc`, and the service PATs under `runtime/zitadel-data/`.
 
-To restore the config archive:
+To inspect the config archive without writing anything — worth doing periodically to
+confirm the offline key still decrypts it, which is the only part of this backup no
+automated check can prove:
 
 ```bash
-age -d -i cdcf-backup.key config-<ts>.tar.gz.age | tar -xz -C /
+age -d -i cdcf-backup.key config-<ts>.tar.gz.age | tar -tz
 ```
+
+`tar -t` lists and extracts nothing. Members are stored as absolute paths, so tar
+reports `Removing leading '/' from member names` — expected, and what makes the
+staged restore below land in the right place.
+
+To restore, extract to a STAGING directory and copy back deliberately:
+
+```bash
+mkdir -p /tmp/cfg-restore
+age -d -i cdcf-backup.key config-<ts>.tar.gz.age | tar -xz -C /tmp/cfg-restore
+# then inspect, and copy only what you meant to restore, e.g.
+#   cp /tmp/cfg-restore/opt/cdcf-auth/auth/.env.production /opt/cdcf-auth/auth/
+```
+
+Do **not** pipe straight into `tar -xz -C /`. That overwrites live configuration in
+place with whatever the archive holds — including a `.env.production` whose
+`OPENFGA_MODEL_ID` and other pins may be older than what is deployed, which would
+silently roll the running system back to the state of the backup.
 
 **Critical**: the `ZITADEL_MASTERKEY` is NOT in pg_dump. Without it, the dump is mathematically unrecoverable (secrets in events are encrypted). Back up the masterkey separately, out-of-band, in your password manager.
 
