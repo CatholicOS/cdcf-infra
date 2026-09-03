@@ -86,6 +86,7 @@ dump_peer() {
     local db="$1"
     local out="$BACKUP_DIR/${db}-${ts}.sql.gz"
     sudo -n -u postgres pg_dump \
+        --port="$PG_PORT" \
         --dbname="$db" --format=plain --no-owner --no-privileges \
         | gzip -9 > "$out"
     echo "wrote $out ($(du -h "$out" | cut -f1))"
@@ -97,7 +98,7 @@ dump_peer() {
 # means the job either does all of its work or none of it.
 if [[ -n "$PEER_DBS" ]]; then
     for db in $PEER_DBS; do
-        if ! sudo -n -u postgres psql -Atqc \
+        if ! sudo -n -u postgres psql --port="$PG_PORT" -Atqc \
                 "SELECT 1 FROM pg_database WHERE datname = '$db'" | grep -q 1; then
             echo "PEER_DBS names '$db', which does not exist on $PG_HOST" >&2
             exit 1

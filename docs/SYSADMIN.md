@@ -420,7 +420,7 @@ The script `auth/backup/pg-dump.sh` produces gzipped pg_dump output of the auth 
 
 Dumps land in `/var/backups/cdcf-auth/` and are then copied off-server over SFTP, to the same host Plesk's own backups use (`SFTP_*` in `.env.production`). The push is part of the script rather than a follow-on step: a dump that never leaves the machine does not survive the failure it exists for.
 
-**Plesk's backups do NOT cover these databases, and cannot be made to.** Plesk backs up what is in its own registry, and every database there is MySQL; `zitadel` and `openfga` are host PostgreSQL databases it has no knowledge of. This script is the only thing backing them up. (The same is true of `litcal_staging` and `litcal_production`, which this script does not cover either — see the note below.)
+**Plesk's backups do NOT cover these databases, and cannot be made to.** Plesk backs up what is in its own registry, and every database there is MySQL; `zitadel` and `openfga` are host PostgreSQL databases it has no knowledge of. This script is the only thing backing them up. The same was true of `litcal_staging` and `litcal_production` until they were added to `PEER_DBS`; `bibleget_dev` and the `marriage_booklet_*` set are still uncovered.
 
 The job authenticates with its own key (`/root/.ssh/cdcf-backup`), not Plesk's. Plesk's key lives under `/opt/psa/var/modules/sftp-backup/ssh-keys/` with a randomly generated filename the extension may regenerate on update; a job that borrowed it would start failing the day it did.
 
