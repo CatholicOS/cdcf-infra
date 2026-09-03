@@ -418,7 +418,17 @@ The script `auth/backup/pg-dump.sh` produces gzipped pg_dump output of both DBs 
 15 3 * * * /opt/cdcf-auth/auth/backup/pg-dump.sh >> /var/log/cdcf-auth-backup.log 2>&1
 ```
 
-Dumps land in `/var/backups/cdcf-auth/`. **Off-server copy is the operator's responsibility** — use Plesk's backup tool, rclone, restic, or your existing off-server backup channel.
+Dumps land in `/var/backups/cdcf-auth/` and are then copied off-server over SFTP, to the same host Plesk's own backups use (`SFTP_*` in `.env.production`). The push is part of the script rather than a follow-on step: a dump that never leaves the machine does not survive the failure it exists for.
+
+**Plesk's backups do NOT cover these databases, and cannot be made to.** Plesk backs up what is in its own registry, and every database there is MySQL; `zitadel` and `openfga` are host PostgreSQL databases it has no knowledge of. This script is the only thing backing them up. (The same is true of `litcal_staging` and `litcal_production`, which this script does not cover either — see the note below.)
+
+The job authenticates with its own key (`/root/.ssh/cdcf-backup`), not Plesk's. Plesk's key lives under `/opt/psa/var/modules/sftp-backup/ssh-keys/` with a randomly generated filename the extension may regenerate on update; a job that borrowed it would start failing the day it did.
+
+Failure behaviour is deliberate: a failed or incomplete upload exits non-zero and leaves the local dumps in place, and the retention prune never runs after one — a run that could not get its dump off the box must not also delete the older ones that did. Success is confirmed against a remote directory listing rather than sftp's own exit code, since `put` can report success for a transfer the far end truncated.
+
+Set `SFTP_HOST=` (empty) to disable the push and keep dumps local only, which is the right setting anywhere but production.
+
+> **Not covered here:** `litcal_staging` and `litcal_production` are host PostgreSQL databases with no backup at all — `litcal_staging` holds the RBAC change requests, access requests and audit log. Bringing them into this script (or a sibling of it) is tracked separately.
 
 **Critical**: the `ZITADEL_MASTERKEY` is NOT in pg_dump. Without it, the dump is mathematically unrecoverable (secrets in events are encrypted). Back up the masterkey separately, out-of-band, in your password manager.
 
