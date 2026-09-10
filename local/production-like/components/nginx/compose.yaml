@@ -1,0 +1,25 @@
+name: cdcf-nginx-simulation
+
+services:
+  nginx-host:
+    build:
+      context: .
+    environment:
+      NGINX_FORWARDED_PROTO: http
+    volumes:
+      - ../../../../auth/nginx/zitadel.conf:/etc/nginx/production/zitadel.conf:ro
+    ports:
+      - '127.0.0.1:8090:80'
+    networks:
+      - auth-network
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1/debug/ready]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+networks:
+  auth-network:
+    external: true
+    name: cdcf-auth-test_default

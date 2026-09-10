@@ -252,7 +252,7 @@ Two subdomains + two Plesk Docker Proxy Rules (one per subdomain). DNS + Let's E
 | `auth.catholicdigitalcommons.org` | `cdcf-auth-zitadel-proxy-1` | 80 | Internal nginx that routes `/ui/v2/login*` → `zitadel-login:3000`, everything else → `zitadel:8080` |
 | `authz.catholicdigitalcommons.org` | `cdcf-auth-openfga-1` | 8080 | OpenFGA HTTP API directly |
 
-The `auth.*` rule points at the internal nginx proxy (`zitadel-proxy`) rather than directly at the Zitadel backend. The proxy handles the path-based split between the backend and the v2 login UI — Plesk's Docker Proxy Rules are per-subdomain, not per-path, so we keep path-level routing inside the compose stack where it's versioned with the rest of the config (`auth/nginx/zitadel.conf`).
+The `auth.*` rule points at the internal nginx proxy (`zitadel-proxy`) rather than directly at the Zitadel backend. The proxy handles the path-based split between the backend and the v2 login UI — Plesk's Docker Proxy Rules are per-subdomain, not per-path, so we keep path-level routing inside the compose stack where it's versioned with the rest of the config (`auth/nginx/zitadel.conf`). The same file is rendered as an nginx template in production and locally: `$http_host` preserves the incoming authority (including a local port), while `NGINX_FORWARDED_PROTO` is set to `https` in production and `http` in local Compose files.
 
 ## Backup
 

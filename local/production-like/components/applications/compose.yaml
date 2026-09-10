@@ -1,0 +1,147 @@
+name: cdcf-application-simulation
+
+x-database-access: &database-access
+  extra_hosts:
+    - 'host.docker.internal:172.31.250.10'
+  networks:
+    - application
+    - database
+
+services:
+  zitadel-runtime-init:
+    image: alpine:3.22
+    command: [sh, -c, chmod 0777 /zitadel-data]
+    volumes:
+      - zitadel-runtime-data:/zitadel-data
+    networks:
+      - application
+    restart: 'no'
+
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:v4.15.0
+    command: start-from-init --masterkeyFromEnv
+    restart: unless-stopped
+    <<: *database-access
+    depends_on:
+      zitadel-runtime-init:
+        condition: service_completed_successfully
+    environment:
+      ZITADEL_DATABASE_POSTGRES_HOST: host.docker.internal
+      ZITADEL_DATABASE_POSTGRES_PORT: '5432'
+      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${ZITADEL_DB_PASSWORD:-local-zitadel-db-password}
+      ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: zitadel
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${ZITADEL_DB_PASSWORD:-local-zitadel-db-password}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
+      # Exactly 32 characters; public local-test value, never use in production.
+      ZITADEL_MASTERKEY: LocalOnlyMasterKey-32-Character!
+      ZITADEL_EXTERNALDOMAIN: localhost
+      ZITADEL_EXTERNALPORT: '8090'
+      ZITADEL_EXTERNALSECURE: 'false'
+      ZITADEL_TLS_ENABLED: 'false'
+      ZITADEL_DEFAULTINSTANCE_DOMAINPOLICY_USERLOGINMUSTBEDOMAIN: 'false'
+      ZITADEL_DEFAULTINSTANCE_DOMAINPOLICY_USEREMAILASUSERNAME: 'true'
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: local-admin
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: LocalTest1!
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: 'false'
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_EMAIL_ADDRESS: admin@example.test
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_EMAIL_VERIFIED: 'true'
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_FIRSTNAME: Local
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_LASTNAME: Admin
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME: login-client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: Local Login V2 Client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE: '2099-12-31T23:59:59Z'
+      ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH: /zitadel-data/login-client.pat
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: 'true'
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: http://localhost:8090/ui/v2/login
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: http://localhost:8090/ui/v2/login/login?authRequest=
+      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: http://localhost:8090/ui/v2/login/logout?post_logout_redirect=
+      ZITADEL_SAML_DEFAULTLOGINURLV2: http://localhost:8090/ui/v2/login/login?samlRequest=
+    volumes:
+      - zitadel-runtime-data:/zitadel-data
+    expose:
+      - '8080'
+    ports:
+      - '127.0.0.1:18080:8080'
+    healthcheck:
+      test: [CMD, /app/zitadel, ready]
+      interval: 10s
+      timeout: 30s
+      retries: 18
+      start_period: 120s
+
+  zitadel-login:
+    image: ghcr.io/zitadel/zitadel-login:v4.15.0
+    restart: unless-stopped
+    depends_on:
+      zitadel:
+        condition: service_healthy
+    environment:
+      ZITADEL_API_URL: http://zitadel:8080
+      NEXT_PUBLIC_BASE_PATH: /ui/v2/login
+      ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel-data/login-client.pat
+      CUSTOM_REQUEST_HEADERS: 'Host:localhost:8090'
+      EMAIL_VERIFICATION: 'true'
+    volumes:
+      - zitadel-runtime-data:/zitadel-data:ro
+    expose:
+      - '3000'
+    ports:
+      - '127.0.0.1:13000:3000'
+    networks:
+      - application
+    healthcheck:
+      test: [CMD, node, /app/healthcheck.mjs, http://localhost:3000/ui/v2/login/healthy]
+      interval: 10s
+      timeout: 30s
+      retries: 12
+      start_period: 20s
+
+  openfga-migrate:
+    image: openfga/openfga:v1.18.2
+    command: migrate
+    restart: 'no'
+    <<: *database-access
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://openfga:${OPENFGA_DB_PASSWORD:-local-openfga-db-password}@host.docker.internal:5432/openfga?sslmode=disable
+
+  openfga:
+    image: openfga/openfga:v1.18.2
+    command: run
+    restart: unless-stopped
+    <<: *database-access
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://openfga:${OPENFGA_DB_PASSWORD:-local-openfga-db-password}@host.docker.internal:5432/openfga?sslmode=disable
+      OPENFGA_AUTHN_METHOD: preshared
+      OPENFGA_AUTHN_PRESHARED_KEYS: ${OPENFGA_PRESHARED_KEY:-local-openfga-api-key}
+      OPENFGA_HTTP_TLS_ENABLED: 'false'
+      OPENFGA_LOG_FORMAT: json
+      OPENFGA_PLAYGROUND_ENABLED: 'false'
+    expose:
+      - '8080'
+      - '8081'
+    ports:
+      - '127.0.0.1:18081:8080'
+    healthcheck:
+      test: [CMD, /usr/local/bin/grpc_health_probe, -addr=localhost:8081]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+networks:
+  application:
+    name: cdcf-application-simulation
+  database:
+    external: true
+    name: cdcf-production-simulation_production-simulation
+
+volumes:
+  zitadel-runtime-data:

@@ -1,0 +1,31 @@
+services:
+  zitadel:
+    depends_on:
+      postgres-host:
+        condition: service_healthy
+      zitadel-runtime-init:
+        condition: service_completed_successfully
+    networks: !override
+      - application
+      - production-simulation
+
+  zitadel-login:
+    networks: !override
+      - application
+
+  openfga-migrate:
+    depends_on:
+      postgres-host:
+        condition: service_healthy
+    networks: !override
+      - application
+      - production-simulation
+
+  openfga:
+    networks: !override
+      - application
+      - production-simulation
+
+networks:
+  application:
+    name: cdcf-scenario-postgres-application

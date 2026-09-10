@@ -161,6 +161,8 @@ services:
   zitadel-proxy:
     image: nginx:alpine
     restart: unless-stopped
+    environment:
+      NGINX_FORWARDED_PROTO: https
     depends_on:
       zitadel:
         condition: service_healthy
@@ -175,7 +177,9 @@ services:
       retries: 12
       start_period: 10s
     volumes:
-      - ./nginx/zitadel.conf:/etc/nginx/conf.d/default.conf:ro
+      # The official nginx entrypoint renders templates into conf.d. Restricting
+      # the environment difference to this value keeps one shared nginx source.
+      - ./nginx/zitadel.conf:/etc/nginx/templates/default.conf.template:ro
     ports:
       - '127.0.0.1:8080:80'
 

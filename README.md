@@ -15,8 +15,25 @@ This repo contains **only infrastructure** — no application code. Each propert
 | Path | Purpose |
 | --- | --- |
 | [`auth/`](./auth/) | Zitadel (identity) at `auth.catholicdigitalcommons.org` + OpenFGA (relationship authz) at `authz.catholicdigitalcommons.org` |
+| [`local/`](./local/) | Disposable Docker environments for fast development, isolated boundary tests, and production-like integration checks |
 
 Future sibling directories may be added for other shared services (e.g. `metrics/`, `logs/`) as the umbrella grows.
+
+## Local Docker environments
+
+[`local/`](./local/) provides a fast development stack and a more detailed
+production-like assembly for validating PostgreSQL, Zitadel, Login V2, OpenFGA
+and nginx changes before they reach the VPS. Hybrid scenarios can isolate either
+the PostgreSQL or nginx boundary.
+
+Everything under `local/` remains a Docker simulation. Even the production-like
+environment does not reproduce Plesk, managed TLS, Let's Encrypt, the VPS kernel,
+firewall, permissions, secrets or production data. A successful local check is
+useful evidence, but it is not a substitute for production-specific review.
+
+Files under `local/` are intentionally outside `auth/**` and are therefore not
+selected by the production VPS synchronization workflow. See
+[`local/README.md`](./local/README.md) for the available modes and commands.
 
 ## Architecture
 
@@ -27,7 +44,8 @@ The deployment runs on the existing cdcf-website Plesk VPS via the Plesk Docker 
 **Pinned architecture (see [`auth/README.md`](./auth/README.md) for full rationale):**
 
 - Single Zitadel instance, one Org per property (`CDCF`, `LiturgicalCalendar`, `BibleGet`, `OntoKit`, `Martyrology`).
-- No `zitadel-login` v2 UI service — each property implements its own login UI by calling Zitadel APIs.
+- A shared Zitadel Login V2 service is routed with the Zitadel backend through
+  the internal nginx proxy.
 - Shared OpenFGA, with its own database on the host's native PostgreSQL.
 - **No containerized databases.** Both Zitadel and OpenFGA persist to the host Postgres (the same instance other VPS services already use). One Postgres to back up, patch, monitor.
 - Repo is cloned to `/opt/cdcf-auth/` on the VPS — see [`auth/README.md`](./auth/README.md#canonical-vps-layout) for the full path table.

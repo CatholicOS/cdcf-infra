@@ -1,0 +1,7 @@
+services:
+  db-verifier:
+    profiles: [component-verification]
+
+networks:
+  production-simulation:
+    name: cdcf-integration-database
