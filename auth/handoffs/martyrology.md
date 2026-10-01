@@ -430,6 +430,12 @@ requesting an `:aud` scope.
 |---|---|---|---|
 | `Martyrology Frontend` | `https://romanmartyrology.com` | false | `client_secret_post` |
 
+- **Client ID** (→ `AUTH_ZITADEL_ID`, a GitHub repository variable on
+  `martyrology-frontend`): `384690189420789763`. This is the OAuth client ID,
+  not the app's App ID — the console shows both.
+- **Client secret** (→ `AUTH_ZITADEL_SECRET`): **out-of-band**, set by hand in
+  Plesk only (see below). Never committed to this file.
+
 Local development provisions the same app name into a **separate, local-only
 Zitadel instance** (`--target local`) — one app per instance, not a second app
 in this project. That client's ID and secret live in the local stack's own
