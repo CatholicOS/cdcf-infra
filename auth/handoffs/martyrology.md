@@ -418,6 +418,47 @@ concluding anything, in two steps — the two tokens carry different things:
    is one you do not recognise, the id_token is the only place in the response
    that names it.
 
+## Human login — the frontend OIDC clients
+
+Provisioned by `./setup-zitadel.sh --target production --provision-martyrology-frontend`.
+One confidential Web app in the **existing `MartyrologyAPI` project** — not a
+project of its own, because project membership is what puts
+`urn:zitadel:iam:org:project:384518610174869507:roles` in the token without
+requesting an `:aud` scope.
+
+| App | Origin | devMode | Auth method |
+|---|---|---|---|
+| `Martyrology Frontend` | `https://romanmartyrology.com` | false | `client_secret_post` |
+
+Local development provisions the same app name into a **separate, local-only
+Zitadel instance** (`--target local`) — one app per instance, not a second app
+in this project. That client's ID and secret live in the local stack's own
+`.env`, not here; see `martyrology-frontend`'s README.
+
+Callback path: `/api/auth/callback/zitadel` — fixed by the Auth.js provider
+id, so it cannot be changed without changing the provider id too.
+
+The frontend sign-in code (`martyrology-frontend`, Auth.js v5, next-auth
+`5.0.0-beta.32`) lives on that repo's `feat/oidc-sign-in` branch, pending
+merge and deploy; it is not yet running on production.
+
+### Secrets are not in git and not in the deploy
+
+`AUTH_SECRET` and `AUTH_ZITADEL_SECRET` are set by hand in Plesk → Domains →
+romanmartyrology.com → Node.js → Custom environment variables. The deploy
+writes `.next/standalone/.env` with non-secret values only; a real environment
+variable takes precedence over that file.
+
+The client secret was emitted once at creation and is unrecoverable. To
+rotate: Martyrology Org → Projects → MartyrologyAPI → Apps → `Martyrology Frontend` →
+Regenerate Client Secret, then update the Plesk environment variable.
+
+### Verified end to end
+
+See "Verified end to end — 2026-08-03" above: a token minted by this frontend
+app is accepted by the API, and the roles claim and licensing behaviour were
+confirmed there.
+
 ## What's NOT provisioned here (follow-ups)
 
 - ~~**Tuple seeding is manual.**~~ **Done** — `setup-openfga.sh` now seeds `auth/models/Martyrology.tuples.json` idempotently after the model upload, and `--seed-tuples Martyrology` re-applies it on its own. See "Tuple seeding — automated" above.
@@ -432,3 +473,4 @@ concluding anything, in two steps — the two tokens carry different things:
 
   One residual unknown, stated rather than glossed: the exact clock time of the 2026-08-03 observation was not recorded, so this identifies the only path that *can* grant it in the store's current state. Since `setup-openfga.sh` never deletes tuples, a direct grant that once existed and vanished would require a manual delete — no evidence of one.
 - ~~**Zitadel project roles not yet created in production**~~ **Done.** All three of `MARTYROLOGY_ROLES` (`admin`, `martyrology_editor`, `developer`) exist on the live `MartyrologyAPI` Project, confirmed by the owner on 2026-08-03 and corroborated by a live token carrying `admin`. `create_roles` remains idempotent if it is ever re-run.
+- ~~**No human can obtain a token**~~ **Done** — see "Human login — the frontend OIDC clients" above. Curation *writes* still have no UI; the frontend signs in and reads, and the Phase B authoring operations remain unbuilt.
