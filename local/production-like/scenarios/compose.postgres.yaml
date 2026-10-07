@@ -1,0 +1,11 @@
+name: cdcf-scenario-postgres
+
+# Production-like PostgreSQL host boundary with the pinned application images,
+# without the production-like nginx component.
+include:
+  - path:
+      - ../components/postgres/compose.yaml
+      - ./overrides/postgres.yaml
+  - path:
+      - ../components/applications/compose.yaml
+      - ./overrides/applications-postgres.yaml

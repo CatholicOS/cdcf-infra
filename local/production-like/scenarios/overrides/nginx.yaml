@@ -1,0 +1,13 @@
+services:
+  nginx-host:
+    depends_on:
+      zitadel:
+        condition: service_healthy
+      zitadel-login:
+        condition: service_healthy
+    networks: !override
+      - default
+
+networks:
+  default:
+    name: cdcf-scenario-nginx-application

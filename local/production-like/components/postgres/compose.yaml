@@ -1,0 +1,55 @@
+name: cdcf-production-simulation
+
+services:
+  # Simulates PostgreSQL installed from Ubuntu packages on the VPS host.
+  # The static address lets application containers use the same
+  # host.docker.internal hostname as the production compose.
+  postgres-host:
+    build:
+      context: .
+    hostname: simulated-ubuntu-host
+    environment:
+      ZITADEL_DB_PASSWORD: ${ZITADEL_DB_PASSWORD:-local-zitadel-db-password}
+      OPENFGA_DB_PASSWORD: ${OPENFGA_DB_PASSWORD:-local-openfga-db-password}
+    networks:
+      production-simulation:
+        ipv4_address: 172.31.250.10
+    ports:
+      - '127.0.0.1:15432:5432'
+    volumes:
+      - postgres-host-data:/var/lib/postgresql/16/main
+      - postgres-host-config:/etc/postgresql/16/main
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -p, '5432', -U, postgres]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  # Represents an application container on the same bridge network as
+  # Zitadel/OpenFGA. Its hosts entry deliberately replaces production's
+  # host-gateway mapping with the simulated Ubuntu host's fixed address.
+  db-verifier:
+    build:
+      context: .
+    entrypoint: [sleep, infinity]
+    environment:
+      PGPASSWORD_ZITADEL: ${ZITADEL_DB_PASSWORD:-local-zitadel-db-password}
+      PGPASSWORD_OPENFGA: ${OPENFGA_DB_PASSWORD:-local-openfga-db-password}
+    extra_hosts:
+      - 'host.docker.internal:172.31.250.10'
+    networks:
+      production-simulation: {}
+    depends_on:
+      postgres-host:
+        condition: service_healthy
+
+networks:
+  production-simulation:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+
+volumes:
+  postgres-host-data:
+  postgres-host-config:

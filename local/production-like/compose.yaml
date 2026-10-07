@@ -1,0 +1,12 @@
+name: cdcf-integration
+
+include:
+  - path:
+      - ./components/postgres/compose.yaml
+      - ./overrides/postgres.yaml
+  - path:
+      - ./components/applications/compose.yaml
+      - ./overrides/applications.yaml
+  - path:
+      - ./components/nginx/compose.yaml
+      - ./overrides/nginx.yaml

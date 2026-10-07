@@ -1,0 +1,12 @@
+name: cdcf-scenario-nginx
+
+# Fast containerized databases and pinned application images from local/dev,
+# with the production-like Ubuntu/nginx component replacing the dev proxy.
+include:
+  - path:
+      - ../../dev/compose.yaml
+      - ../../dev/compose.proxy.yaml
+      - ./overrides/dev-nginx.yaml
+  - path:
+      - ../components/nginx/compose.yaml
+      - ./overrides/nginx.yaml

@@ -1,0 +1,9 @@
+services:
+  # Login V2 needs the proxy overlay's first-boot settings, but this scenario
+  # replaces its lightweight proxy with the production-like nginx component.
+  plesk-proxy:
+    profiles: [dev-proxy-disabled]
+
+networks:
+  default:
+    name: cdcf-scenario-nginx-application
