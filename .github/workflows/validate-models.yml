@@ -52,6 +52,8 @@ on:
       - 'auth/setup-openfga.selftest.sh'
       - 'auth/setup-zitadel.sh'
       - 'auth/setup-zitadel.selftest.sh'
+      - 'auth/backup/pg-dump.sh'
+      - 'auth/backup/pg-dump.selftest.sh'
       - '.github/workflows/validate-models.yml'
   push:
     branches:
@@ -64,6 +66,8 @@ on:
       - 'auth/setup-openfga.selftest.sh'
       - 'auth/setup-zitadel.sh'
       - 'auth/setup-zitadel.selftest.sh'
+      - 'auth/backup/pg-dump.sh'
+      - 'auth/backup/pg-dump.selftest.sh'
       - '.github/workflows/validate-models.yml'
   merge_group:
     types: [checks_requested]
@@ -111,6 +115,14 @@ jobs:
       # the CDCF non-prod app must never carry a localhost one.
       - name: Self-test setup-zitadel's target-aware provisioning
         run: ./auth/setup-zitadel.selftest.sh
+
+      # pg-dump.sh is the only backup of the host PostgreSQL databases, and its
+      # failures stay silent until a restore is needed. In October 2026 an
+      # unpruned remote filled up, failed pushes piled large dumps up locally,
+      # and five nights went without a backup. These cases pin the remote
+      # prune, the size-checked push and the local cap against stub sftp.
+      - name: Self-test pg-dump's retention and push checks
+        run: ./auth/backup/pg-dump.selftest.sh
 
       - name: Validate models against consumer expectations
         run: ./auth/validate-expectations.sh
