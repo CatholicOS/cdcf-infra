@@ -63,6 +63,19 @@ PEER_DBS="${PEER_DBS:-}"
 LARGE_DBS="${LARGE_DBS:-}"
 LARGE_GZIP_LEVEL="${LARGE_GZIP_LEVEL:-6}"
 
+# How many local dumps of each large database may exist at once, tonight's
+# included, while pushes are failing. A failed push keeps its large dump, so
+# without a cap every failing night adds one until /var/backups is full — and
+# then the dump itself fails and takes the rest of the run with it, which is
+# how October 2026 lost five nights of bibleget_dev. Older unpushed dumps are
+# removed before tonight's is written; the newest ones are kept.
+LARGE_KEEP_UNPUSHED="${LARGE_KEEP_UNPUSHED:-2}"
+
+# Days of history to keep on the remote, by the date in each file name.
+# Defaults to RETENTION_DAYS; 0 disables the remote prune. Without one the
+# remote held every nightly dump until it was full and refused writes.
+REMOTE_RETENTION_DAYS="${REMOTE_RETENTION_DAYS:-}"
+
 # Host configuration to archive: files and directories that exist in
 # neither git nor a Plesk-backed vhost. Space-separated; empty disables.
 #
@@ -84,6 +97,13 @@ SFTP_KEY="${SFTP_KEY:-/root/.ssh/cdcf-backup}"
 
 # shellcheck disable=SC1090
 set -a; source "$ENV_FILE"; set +a
+
+# After the env file, so a RETENTION_DAYS set there carries over.
+REMOTE_RETENTION_DAYS="${REMOTE_RETENTION_DAYS:-$RETENTION_DAYS}"
+
+# Set when a step that does not undo the backup fails (the remote prune), so
+# the run can finish its local work and still exit non-zero.
+SOFT_FAILURE=0
 
 mkdir -p "$BACKUP_DIR"
 ts="$(date -u +%Y%m%d-%H%M%S)"
@@ -216,6 +236,30 @@ if [[ -n "$PEER_DBS$LARGE_DBS" ]]; then
     done
 fi
 
+# Any local dump of a large database is one whose push failed: a confirmed
+# push deletes it. Keep the newest LARGE_KEEP_UNPUSHED - 1 of them, leaving
+# room for tonight's. The name must be exactly <db>-<date>-<time>.sql.gz, so
+# a database whose name merely starts with this one is never touched.
+cap_unpushed() {
+    local db="$1" keep=$(( LARGE_KEEP_UNPUSHED > 1 ? LARGE_KEEP_UNPUSHED - 1 : 0 ))
+    local f
+    local -a found=()
+    for f in "$BACKUP_DIR/${db}"-*.sql.gz; do
+        [[ "$(basename "$f")" =~ ^${db}-[0-9]{8}-[0-9]{6}\.sql\.gz$ ]] && found+=("$f")
+    done
+    (( ${#found[@]} > keep )) || return 0
+    # Timestamps in the names sort chronologically.
+    mapfile -t found < <(printf '%s\n' "${found[@]}" | sort)
+    for f in "${found[@]:0:${#found[@]}-keep}"; do
+        rm -f "$f"
+        echo "removed unpushed $(basename "$f") (keeping at most $LARGE_KEEP_UNPUSHED local dumps of $db)" >&2
+    done
+}
+
+for db in $LARGE_DBS; do
+    cap_unpushed "$db"
+done
+
 dump_one "$ZITADEL_DB_USER" "$ZITADEL_DB_NAME" "$ZITADEL_DB_PASSWORD"
 dump_one "$OPENFGA_DB_USER" "$OPENFGA_DB_NAME" "$OPENFGA_DB_PASSWORD"
 
@@ -238,8 +282,12 @@ fi
 #
 # The remote listing afterwards is not decoration: sftp's `put` can report
 # success for a transfer the far end truncated, and a backup you have not
-# confirmed landed is not a backup. `-mkdir` is prefixed with `-` so an
+# confirmed landed is not a backup. Each file must appear in it at its local
+# size, not merely by name. `-mkdir` is prefixed with `-` so an
 # already-existing directory is not an error, which is the normal case.
+#
+# The listing is kept in REMOTE_LISTING for the remote prune.
+REMOTE_LISTING=""
 push_off_server() {
     local remote_dir="$SFTP_PATH"
     local batch expected=0 seen=0
@@ -258,7 +306,7 @@ push_off_server() {
         for f in "${dumps[@]}"; do
             printf 'put %s %s/\n' "$f" "$remote_dir"
         done
-        printf 'ls -1 %s\n' "$remote_dir"
+        printf 'ls -l %s\n' "$remote_dir"
     } > "$batch"
 
     local out
@@ -274,14 +322,22 @@ push_off_server() {
     fi
 
     expected=${#dumps[@]}
+    local name local_size remote_size
     for f in "${dumps[@]}"; do
-        if grep -qF -- "$(basename "$f")" <<<"$out"; then
-            seen=$(( seen + 1 ))
-        else
-            echo "off-server copy INCOMPLETE — $(basename "$f") not in remote listing" >&2
+        name="$(basename "$f")"
+        local_size="$(stat -c %s "$f")"
+        # `ls -l` lines end in the full remote path; the size is column 5.
+        remote_size="$(awk -v p="$remote_dir/$name" '$1 ~ /^-/ && $NF == p { print $5 }' <<<"$out")"
+        if [[ -z "$remote_size" ]]; then
+            echo "off-server copy INCOMPLETE — $name not in remote listing" >&2
+            return 1
+        elif [[ "$remote_size" != "$local_size" ]]; then
+            echo "off-server copy INCOMPLETE — $name size mismatch (local $local_size, remote $remote_size)" >&2
             return 1
         fi
+        seen=$(( seen + 1 ))
     done
+    REMOTE_LISTING="$out"
 
     echo "pushed $seen/$expected dump(s) to ${SFTP_USER}@${SFTP_HOST}:${remote_dir}"
 }
@@ -319,3 +375,54 @@ fi
 # is still unbounded.
 find "$BACKUP_DIR" \( -name '*.sql.gz' -o -name '*.tar.gz.age' \) \
      -mtime "+${RETENTION_DAYS}" -delete
+
+# --- remote prune ------------------------------------------------------
+#
+# Same window on the remote, judged by the date in each file name (sftp gives
+# no usable mtime filter). Runs only after a confirmed push, so tonight's copy
+# of every database is known to be there before any older one is removed. Only
+# names this script writes are candidates — <db>-<YYYYMMDD>-<HHMMSS> plus
+# .sql.gz or .tar.gz.age, for the databases it dumps — so Plesk's archives and
+# anything else sharing the directory are never touched.
+#
+# A failure here does not undo the backup, so it does not stop the run; it is
+# reported and turns the exit status non-zero at the end.
+prune_remote() {
+    local cutoff batch out name db n=0
+    cutoff="$(date -u -d "-${REMOTE_RETENTION_DAYS} days" +%Y%m%d)"
+    local -a ours=( "$ZITADEL_DB_NAME" "$OPENFGA_DB_NAME" $PEER_DBS $LARGE_DBS config )
+
+    batch="$(mktemp)"
+    trap 'rm -f "$batch"' RETURN
+
+    while read -r name; do
+        for db in "${ours[@]}"; do
+            if [[ "$name" =~ ^${db}-([0-9]{8})-[0-9]{6}\.(sql\.gz|tar\.gz\.age)$ ]] \
+                    && [[ "${BASH_REMATCH[1]}" < "$cutoff" ]]; then
+                printf 'rm %s/%s\n' "$SFTP_PATH" "$name" >> "$batch"
+                n=$(( n + 1 ))
+                break
+            fi
+        done
+    done < <(awk '$1 ~ /^-/ { n = split($NF, p, "/"); print p[n] }' <<<"$REMOTE_LISTING")
+
+    (( n > 0 )) || { echo "remote prune: nothing older than $REMOTE_RETENTION_DAYS days"; return 0; }
+
+    if ! out="$(sftp -b "$batch" \
+                     -P "$SFTP_PORT" \
+                     -i "$SFTP_KEY" \
+                     -o BatchMode=yes \
+                     -o StrictHostKeyChecking=accept-new \
+                     "${SFTP_USER}@${SFTP_HOST}" 2>&1)"; then
+        echo "remote prune FAILED — older dumps left on ${SFTP_HOST}" >&2
+        echo "$out" >&2
+        return 1
+    fi
+    echo "pruned $n remote file(s) older than $REMOTE_RETENTION_DAYS days"
+}
+
+if [[ -n "$SFTP_HOST" && "$REMOTE_RETENTION_DAYS" != 0 ]]; then
+    prune_remote || SOFT_FAILURE=1
+fi
+
+exit "$SOFT_FAILURE"
