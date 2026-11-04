@@ -256,9 +256,13 @@ cap_unpushed() {
     done
 }
 
-for db in $LARGE_DBS; do
-    cap_unpushed "$db"
-done
+# Only when there is a remote: with SFTP_HOST empty the local dumps are the
+# only copies, and the retention window, not this cap, governs them.
+if [[ -n "$SFTP_HOST" ]]; then
+    for db in $LARGE_DBS; do
+        cap_unpushed "$db"
+    done
+fi
 
 dump_one "$ZITADEL_DB_USER" "$ZITADEL_DB_NAME" "$ZITADEL_DB_PASSWORD"
 dump_one "$OPENFGA_DB_USER" "$OPENFGA_DB_NAME" "$OPENFGA_DB_PASSWORD"

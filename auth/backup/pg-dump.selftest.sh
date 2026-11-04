@@ -242,7 +242,17 @@ check "tonight's dump was still taken" test "$(count "$(local_ 'zitadel-*')")" =
 check "says what it removed" output_has "unpushed"
 finish_case "unpushed large dumps are capped at LARGE_KEEP_UNPUSHED"
 
-# --- 5. a failed remote prune is noisy but does not undo the push ----------
+# --- 5. local-only mode keeps its large dumps: they are the only copies ----
+
+setup_case localonly
+echo "SFTP_HOST=" >> "$CASE_DIR/env"
+for d in 3 2 1; do echo data > "$(local_ "bibleget_dev-$(day "$d")-031501.sql.gz")"; done
+run_script LARGE_KEEP_UNPUSHED=2
+check "exits 0" expect_status 0
+check "every large dump kept, tonight's included" test "$(count "$(local_ 'bibleget_dev-*')")" = 4
+finish_case "with SFTP_HOST empty the cap does not touch local large dumps"
+
+# --- 6. a failed remote prune is noisy but does not undo the push ----------
 
 setup_case rmfail
 echo data > "$(remote "$old_z")"

@@ -440,7 +440,17 @@ Failure behaviour is deliberate: a failed or incomplete upload exits non-zero an
 
 **The remote is pruned too.** After a confirmed push, files on the remote older than `REMOTE_RETENTION_DAYS` (default: `RETENTION_DAYS`, 14) are deleted, judged by the date in the file name. Only names this script writes are candidates — `<db>-<YYYYMMDD>-<HHMMSS>.sql.gz` or `.tar.gz.age` for the databases it dumps — so Plesk's archives in the same account are never touched. `REMOTE_RETENTION_DAYS=0` turns it off. A failed prune is reported and makes the run exit non-zero, but does not stop it: the backup itself already succeeded. Until November 2026 nothing pruned the remote; it filled with every nightly `bibleget_dev` dump since September and started refusing writes on 2026-10-24.
 
-**Unpushed large dumps are capped.** While pushes fail, each night's large dump stays local. At most `LARGE_KEEP_UNPUSHED` (default 2) local dumps of each large database are kept, tonight's included: older ones are removed before tonight's is written. Without the cap the October 2026 failure filled `/var/backups`, after which the large dump itself failed every night and took the rest of the run with it. A push uploads only the current run's files, so a backlog left by failed nights has to be copied across by hand once the remote accepts writes again.
+**Unpushed large dumps are capped.** While pushes fail, each night's large dump stays local. At most `LARGE_KEEP_UNPUSHED` (default 2) local dumps of each large database are kept, tonight's included: older ones are removed before tonight's is written. Without the cap the October 2026 failure filled `/var/backups`, after which the large dump itself failed every night and took the rest of the run with it. The cap applies only when `SFTP_HOST` is set: in local-only mode the local dumps are the only copies, and the retention window governs them.
+
+**Recovering a full remote.** The remote prune runs only after a confirmed push, so it cannot free a remote that is already refusing writes: every run fails at the push first. Free it by hand before the next run:
+
+1. List the remote (`sftp -i /root/.ssh/cdcf-backup plesk-backup@<host>`, then `ls -l /uploads/cdcf-auth`). Candidates are the names `prune_remote` would pick: `<db>-<YYYYMMDD>-<HHMMSS>.sql.gz` or `config-….tar.gz.age`, for the databases this script dumps, dated before today minus `REMOTE_RETENTION_DAYS`. Also remove any copy smaller than the others of its database: a failed `put` leaves a truncated file under the final name.
+2. Keep the newest complete copy of every database, even if it is older than the cutoff: after a long outage it may be the only one off the box.
+3. Write the `rm` lines to a batch file, review it, and run it with `sudo sftp -b <file> -i /root/.ssh/cdcf-backup plesk-backup@<host>`; end the batch with `df -h /uploads` to see the space freed.
+4. Copy the backlog across: for each local dump missing on the remote (or present at a different size), `put` it, then compare sizes with `ls -l`. Remove the local copies of large dumps only once their sizes match.
+5. Run the script once by hand (detached, as above) and check the log for `pushed N/N`.
+
+A push uploads only the current run's files, which is why step 4 is manual.
 
 Set `SFTP_HOST=` (empty) to disable the push and keep dumps local only, which is the right setting anywhere but production.
 
