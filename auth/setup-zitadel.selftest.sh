@@ -86,7 +86,7 @@ done
 # The plain .env.local above deliberately keeps its PAT at $SANDBOX root, which
 # infers NO property. That is what a hand-rolled shared .env.local looks like,
 # and the guard must refuse it for property-bound actions.
-for prop in cdcf-website martyrology-api martyrology-frontend; do
+for prop in cdcf-website martyrology-api martyrology-frontend endpoint; do
     mkdir -p "$SANDBOX/${prop}/.zitadel-data"
     printf 'stub-pat\n' > "$SANDBOX/${prop}/.zitadel-data/automation-user.pat"
     cat > "$SANDBOX/.env.local.${prop}" <<EOF
@@ -444,6 +444,37 @@ expect 0 has "https://romanmartyrology.com/api/auth/callback/zitadel" \
 expect 0 has "no staging deployment" \
     "staging skips with the reason, since Martyrology has no staging origin" -- \
     --target staging --provision-martyrology-frontend
+
+echo "${B}[selftest]${N} --- BibleGet: Project on every target, website app local only ---"
+
+expect 0 has "ZITADEL_AUDIENCE=proj-1" \
+    "the BibleGet Project id is handed off as the endpoint's audience" -- \
+    --target production --provision-bibleget
+
+expect 0 has "bibleget_admin" \
+    "the bibleget_admin role is created" -- \
+    --target staging --provision-bibleget
+
+expect 0 has "http://localhost:3000/api/auth/callback/zitadel" \
+    "local registers the website's localhost origin" -- \
+    ENV_FILE=.env.local.endpoint --target local --provision-bibleget-website
+
+expect 0 has "no production deployment" \
+    "production skips the website app: it has no deployment yet" -- \
+    --target production --provision-bibleget-website
+
+expect 0 has "no staging deployment" \
+    "staging skips the website app too, so nothing lands in the shared instance" -- \
+    --target staging --provision-bibleget-website
+
+expect 17 has "endpoint" \
+    "provisioning BibleGet with cdcf-website's PAT refuses (#34 guard)" -- \
+    ENV_FILE=.env.local.cdcf-website --target local --provision-bibleget
+
+expect 0 has "BibleGet Website handoff values" \
+    "the endpoint repo's setup script invocation provisions normally" -- \
+    ENV_FILE=.env.local.endpoint --target local \
+    --create-org BibleGet --provision-bibleget --provision-bibleget-website
 
 echo "${B}[selftest]${N} --- the skip contract: exit 0, so --all sweeps past ---"
 
