@@ -62,6 +62,9 @@
 #   --rename-bootstrap-admin   If the IAM admin user still has the legacy
 #                              `<username>@<orgdomain>` suffix in its
 #                              username, rename it to $ZITADEL_ADMIN_EMAIL.
+#   --assign-role PROJECT ROLE LOGIN
+#                              Give a user (any Org) a role on a Project, e.g.
+#                              --assign-role BibleGet bibleget_admin <login>.
 #   --all                      Run --rename-bootstrap-admin, --create-orgs,
 #                              --provision-litcal, --provision-litcal-frontend,
 #                              --provision-cdcf-website, --provision-martyrology
@@ -80,6 +83,7 @@ set -euo pipefail
 
 TARGET=""
 ACTIONS=()
+ASSIGN_PROJECTS=(); ASSIGN_ROLES=(); ASSIGN_LOGINS=()
 # Org names ride inside each ACTIONS entry ("create-org:NAME") rather than in a
 # shared scalar: with one SINGLE_ORG, a second --create-org overwrote the first,
 # so `--create-org A --create-org B` created B twice and silently dropped A.
@@ -123,6 +127,11 @@ Actions:
                               JWT access tokens). Origin follows --target: localhost+devMode
                               on local; skips on staging and production (no deployment yet).
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
+  --assign-role PROJECT ROLE LOGIN
+                              Give the user with login name LOGIN the role ROLE on the
+                              Project named PROJECT (idempotent; repeatable). The user may
+                              belong to any Org: the role is assigned in the Project's own
+                              Org, which needs no project grant. Not part of --all.
   --all                       Above ten in dependency order
 
 Environment variables (sourced from .env.\$target):
@@ -186,6 +195,12 @@ while [[ $# -gt 0 ]]; do
         --provision-bibleget)        ACTIONS+=("provision-bibleget"); shift ;;
         --provision-bibleget-website) ACTIONS+=("provision-bibleget-website"); shift ;;
         --rename-bootstrap-admin)    ACTIONS+=("rename-bootstrap-admin"); shift ;;
+        # Three operands, none empty or an option, for the same reason as --create-org.
+        --assign-role)
+            [[ $# -ge 4 ]] || usage
+            for _operand in "$2" "$3" "$4"; do [[ -n "$_operand" && "$_operand" != --* ]] || usage; done
+            ASSIGN_PROJECTS+=("$2"); ASSIGN_ROLES+=("$3"); ASSIGN_LOGINS+=("$4")
+            ACTIONS+=("assign-role:$(( ${#ASSIGN_PROJECTS[@]} - 1 ))"); shift 4 ;;
         --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend" "provision-litcal-tests-ui" "provision-cdcf-website" "provision-martyrology" "provision-martyrology-frontend" "provision-bibleget" "provision-bibleget-website"); shift ;;
         -h|--help)                   usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
@@ -1356,8 +1371,8 @@ do_provision_bibleget() {
     echo "${B}--- for the BibleGet endpoint's .env.<environment> ---${N}"
     echo "ZITADEL_ISSUER=$ZITADEL_ISSUER"
     echo "ZITADEL_AUDIENCE=$project_id   # ← the Project id"
-    echo "# Grant bibleget_admin to the admins: $BIBLEGET_ORG_NAME Org → Projects →"
-    echo "#   $BIBLEGET_PROJECT_NAME → Authorizations. See handoffs/bibleget.md."
+    echo "# Grant bibleget_admin to an admin (any Org):"
+    echo "#   ./setup-zitadel.sh --target $TARGET --assign-role $BIBLEGET_PROJECT_NAME bibleget_admin <login name>"
     echo
 }
 
@@ -1414,6 +1429,67 @@ do_provision_bibleget_website() {
     echo
 }
 
+# --- role assignments -----------------------------------------------------
+
+# --assign-role PROJECT ROLE LOGIN. A project role reaches the token as an
+# authorization (a "user grant" in the console). Zitadel v4 lets the Org that
+# owns the Project assign its roles to a user of ANY Org, so no project grant
+# is needed; the console's Role Assignments search only lists the current
+# Org's users, which is why doing this by hand for an admin who lives in the
+# ZITADEL Org is awkward. Idempotent: a role already held is left alone, and an
+# existing authorization on the Project gets the role merged into its roles.
+do_assign_role() {
+    local i="$1"
+    local project_name="${ASSIGN_PROJECTS[$i]}" role="${ASSIGN_ROLES[$i]}" login="${ASSIGN_LOGINS[$i]}"
+    log "Assigning role $role on Project $project_name to $login"
+
+    local body count project_id project_org
+    body=$(zapi POST /zitadel.project.v2.ProjectService/ListProjects \
+        "$(jq -nc --arg n "$project_name" '{filters:[{project_name_filter:{projectName:$n,method:"TEXT_FILTER_METHOD_EQUALS"}}]}')")
+    count=$(echo "$body" | jq '[.projects[]?] | length')
+    if [[ "$count" -ne 1 ]]; then
+        err "Expected exactly one Project named \"$project_name\", found $count."
+        exit 20
+    fi
+    project_id=$(echo "$body" | jq -r '.projects[0].id // .projects[0].projectId // empty')
+    project_org=$(echo "$body" | jq -r '.projects[0].organizationId // empty')
+    [[ -n "$project_id" && -n "$project_org" ]] || { err "Project lookup returned no id or Org: $body"; exit 20; }
+
+    local user_id
+    body=$(zapi POST /v2/users \
+        "$(jq -nc --arg l "$login" '{queries:[{loginNameQuery:{loginName:$l,method:"TEXT_QUERY_METHOD_EQUALS"}}]}')")
+    user_id=$(echo "$body" | jq -r '.result[0].userId // empty')
+    if [[ -z "$user_id" ]]; then
+        err "No user with login name $login."
+        exit 21
+    fi
+
+    local existing auth_id roles_json result
+    existing=$(zapi POST /zitadel.authorization.v2.AuthorizationService/ListAuthorizations \
+        "{\"filters\":[{\"in_user_ids\":{\"ids\":[\"$user_id\"]}},{\"project_id\":{\"id\":\"$project_id\"}}]}")
+    auth_id=$(echo "$existing" | jq -r '.authorizations[0].id // empty')
+    if [[ -n "$auth_id" ]]; then
+        if echo "$existing" | jq -e --arg r "$role" '[.authorizations[0].roles[]?.key] | index($r)' >/dev/null; then
+            ok "$login already has $role on $project_name"
+            return 0
+        fi
+        roles_json=$(echo "$existing" | jq -c --arg r "$role" '[.authorizations[0].roles[]?.key, $r] | unique')
+        result=$(zapi POST /zitadel.authorization.v2.AuthorizationService/UpdateAuthorization \
+            "{\"id\":\"$auth_id\",\"roleKeys\":$roles_json}")
+        echo "$result" | jq -e '.changeDate' >/dev/null 2>&1 \
+            || { err "Could not add $role to the authorization of $login: $result"; exit 22; }
+        ok "Added $role to $login's roles on $project_name"
+        return 0
+    fi
+    result=$(zapi POST /zitadel.authorization.v2.AuthorizationService/CreateAuthorization \
+        "$(jq -nc --arg u "$user_id" --arg p "$project_id" --arg o "$project_org" --arg r "$role" \
+            '{userId:$u,projectId:$p,organizationId:$o,roleKeys:[$r]}')")
+    echo "$result" | jq -e '.id' >/dev/null 2>&1 \
+        || { err "Could not assign $role to $login: $result"; exit 22; }
+    ok "Assigned $role on $project_name to $login ($user_id)"
+    warn "Tokens issued before now lack the role: sign in again."
+}
+
 # --- main -----------------------------------------------------------------
 
 log "Target: $TARGET (issuer: $ZITADEL_ISSUER, internal: $ZITADEL_INTERNAL_URL)"
@@ -1441,6 +1517,7 @@ for action in "${ACTIONS[@]}"; do
         provision-martyrology-frontend) do_provision_martyrology_frontend ;;
         provision-bibleget)         do_provision_bibleget ;;
         provision-bibleget-website) do_provision_bibleget_website ;;
+        assign-role)                do_assign_role "${action#*:}" ;;
     esac
 done
 

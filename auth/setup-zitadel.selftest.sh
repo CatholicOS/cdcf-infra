@@ -122,6 +122,10 @@ ORGS = ["CDCF", "LiturgicalCalendar", "BibleGet", "OntoKit", "Martyrology"]
 LOG = os.environ.get("STUB_LOG", "")
 EXISTING_FILE = os.environ.get("STUB_EXISTING", "")
 FAILING_FILE = os.environ.get("STUB_FAILING", "")
+AUTH_FILE = os.environ.get("STUB_AUTH_ROLES", "")
+# The one user the stub knows, in an Org other than any Project's (org-9), so
+# the cases show the role is assigned in the Project's Org regardless.
+KNOWN_LOGIN = "admin@example.org"
 
 
 def existing_apps():
@@ -138,6 +142,16 @@ def failing_rpcs():
             return [l.strip() for l in fh if l.strip()]
     except OSError:
         return []
+
+
+def auth_roles():
+    """Roles of the known user's existing authorization, or None if it has none."""
+    try:
+        with open(AUTH_FILE) as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    return [l.strip() for l in text.splitlines() if l.strip()] if text.strip() else None
 
 
 class H(BaseHTTPRequestHandler):
@@ -167,7 +181,9 @@ class H(BaseHTTPRequestHandler):
         if p.endswith("/AddOrganization"):
             return self._send(200, {"organizationId": "org-new"})
         if p.endswith("/ListProjects"):
-            return self._send(200, {"projects": [{"id": "proj-1"}]})
+            if '"Missing Project"' in raw:
+                return self._send(200, {"projects": []})
+            return self._send(200, {"projects": [{"id": "proj-1", "organizationId": "org-2"}]})
         if p.endswith("/CreateProject"):
             return self._send(200, {"id": "proj-1"})
         if p.endswith("/UpdateProject"):
@@ -208,7 +224,19 @@ class H(BaseHTTPRequestHandler):
         if p.endswith("/UpdateApplication"):
             return self._send(200, {"changeDate": "2026-08-18T00:00:00Z"})
         if p == "/v2/users":
+            if KNOWN_LOGIN in raw:
+                return self._send(200, {"result": [{"userId": "user-1"}]})
             return self._send(200, {"result": []})
+        if p.endswith("/ListAuthorizations"):
+            roles = auth_roles()
+            if roles is None:
+                return self._send(200, {"authorizations": []})
+            return self._send(200, {"authorizations": [
+                {"id": "auth-1", "roles": [{"key": r} for r in roles]}]})
+        if p.endswith("/CreateAuthorization"):
+            return self._send(200, {"id": "auth-new", "creationDate": "2026-11-19T00:00:00Z"})
+        if p.endswith("/UpdateAuthorization"):
+            return self._send(200, {"changeDate": "2026-11-19T00:00:00Z"})
         return self._send(200, {})
 
     def do_GET(self):
@@ -223,9 +251,10 @@ EXISTING_FILE="$SANDBOX/existing_apps"
 : > "$EXISTING_FILE"
 FAILING_FILE="$SANDBOX/failing_rpcs"
 : > "$FAILING_FILE"
+AUTH_FILE="$SANDBOX/auth_roles"
 
 start_stub() {
-    STUB_LOG="$REQ_LOG" STUB_EXISTING="$EXISTING_FILE" STUB_FAILING="$FAILING_FILE" \
+    STUB_LOG="$REQ_LOG" STUB_EXISTING="$EXISTING_FILE" STUB_FAILING="$FAILING_FILE" STUB_AUTH_ROLES="$AUTH_FILE" \
         python3 "$SANDBOX/stub.py" "$PORT" >"$SANDBOX/stub.log" 2>&1 &
     STUB_PID=$!
     local i
@@ -339,6 +368,14 @@ existing_apps() {
     : > "$EXISTING_FILE"
     local n
     for n in "$@"; do echo "$n" >> "$EXISTING_FILE"; done
+}
+
+# auth_roles [ROLE...] — the known user's existing authorization on the Project:
+# no arguments means it has none.
+auth_roles() {
+    rm -f "$AUTH_FILE"
+    [[ $# -eq 0 ]] && return 0
+    printf '%s\n' "$@" > "$AUTH_FILE"
 }
 
 # failing_rpcs NAME... — the RPCs (e.g. UpdateProject) the stub answers with a 500.
@@ -513,6 +550,45 @@ expect 10 lacks "AUTH_ZITADEL_ID=" \
     ENV_FILE=.env.local.endpoint --target local --provision-bibleget-website
 failing_rpcs
 existing_apps
+
+echo "${B}[selftest]${N} --- --assign-role: a project role for a user of any Org ---"
+
+expect_payload CreateAuthorization has '"organizationId":"org-2"' \
+    "the role is assigned in the Project's Org, not the user's (no project grant needed)" -- \
+    --target production --assign-role BibleGet bibleget_admin admin@example.org
+
+expect_payload CreateAuthorization has '"roleKeys":["bibleget_admin"]' \
+    "the authorization carries exactly the requested role" -- \
+    --target production --assign-role BibleGet bibleget_admin admin@example.org
+
+expect 21 has "No user with login name nobody@example.org" \
+    "an unknown login name stops with exit 21" -- \
+    --target production --assign-role BibleGet bibleget_admin nobody@example.org
+
+expect 20 has "Missing Project" \
+    "an unknown Project stops with exit 20" -- \
+    --target production --assign-role "Missing Project" bibleget_admin admin@example.org
+
+auth_roles developer
+expect_payload UpdateAuthorization has '"roleKeys":["bibleget_admin","developer"]' \
+    "an existing authorization keeps its roles and gains the new one" -- \
+    --target production --assign-role BibleGet bibleget_admin admin@example.org
+
+auth_roles bibleget_admin
+expect 0 has "already has bibleget_admin" \
+    "a role already held is left alone" -- \
+    --target production --assign-role BibleGet bibleget_admin admin@example.org
+auth_roles
+
+failing_rpcs CreateAuthorization
+expect 22 lacks "Assigned bibleget_admin" \
+    "a failed CreateAuthorization stops with exit 22" -- \
+    --target production --assign-role BibleGet bibleget_admin admin@example.org
+failing_rpcs
+
+expect 64 has "Usage" \
+    "--assign-role with a missing operand prints usage instead of swallowing the next flag" -- \
+    --target production --assign-role BibleGet bibleget_admin --provision-bibleget
 
 echo "${B}[selftest]${N} --- the skip contract: exit 0, so --all sweeps past ---"
 
