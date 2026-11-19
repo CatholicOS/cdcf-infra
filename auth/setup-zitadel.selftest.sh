@@ -536,6 +536,14 @@ expect_payload CreateApplication has '"https://staging.bibleget.io"' \
     "the staging website app registers the post-logout origin" -- \
     --target staging --provision-bibleget-website
 
+expect_payload CreateApplication has '"https://staging.bibleget.io/api/auth/callback/zitadel"' \
+    "the staging website app is created with the staging callback" -- \
+    --target staging --provision-bibleget-website
+
+expect_payload CreateApplication has '"accessTokenType": "OIDC_TOKEN_TYPE_JWT"' \
+    "the staging website app is created with JWT access tokens" -- \
+    --target staging --provision-bibleget-website
+
 # A staging run must look up the staging name only: the local app existing must
 # not make staging update it (it would replace its redirect URIs).
 existing_apps "BibleGet Website"
@@ -545,6 +553,12 @@ expect 0 lacks "app-existing" \
 existing_apps "BibleGet Website (Staging)"
 expect 0 has "app-existing" \
     "staging finds its existing app by the staging name" -- \
+    --target staging --provision-bibleget-website
+expect_payload UpdateApplication has '"https://staging.bibleget.io/api/auth/callback/zitadel"' \
+    "staging update sends the staging callback" -- \
+    --target staging --provision-bibleget-website
+expect_payload UpdateApplication has '"devMode": false' \
+    "staging update sends devMode=false" -- \
     --target staging --provision-bibleget-website
 existing_apps
 
