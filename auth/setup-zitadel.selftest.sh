@@ -502,7 +502,7 @@ expect 0 has "no staging deployment" \
     "staging skips with the reason, since Martyrology has no staging origin" -- \
     --target staging --provision-martyrology-frontend
 
-echo "${B}[selftest]${N} --- BibleGet: Project on every target, website app local only ---"
+echo "${B}[selftest]${N} --- BibleGet: Project on every target, website app on local and staging ---"
 
 expect 0 has "ZITADEL_AUDIENCE=proj-1" \
     "the BibleGet Project id is handed off as the endpoint's audience" -- \
@@ -520,9 +520,47 @@ expect 0 has "no production deployment" \
     "production skips the website app: it has no deployment yet" -- \
     --target production --provision-bibleget-website
 
-expect 0 has "no staging deployment" \
-    "staging skips the website app too, so nothing lands in the shared instance" -- \
+expect 0 has "https://staging.bibleget.io/api/auth/callback/zitadel" \
+    "staging registers the website's staging origin" -- \
     --target staging --provision-bibleget-website
+
+expect_payload CreateApplication has '"devMode": false' \
+    "the staging website app is created with devMode false" -- \
+    --target staging --provision-bibleget-website
+
+expect_payload CreateApplication has '"name":"BibleGet Website (Staging)"' \
+    "the staging website app has its own name" -- \
+    --target staging --provision-bibleget-website
+
+expect_payload CreateApplication has '"https://staging.bibleget.io"' \
+    "the staging website app registers the post-logout origin" -- \
+    --target staging --provision-bibleget-website
+
+expect_payload CreateApplication has '"https://staging.bibleget.io/api/auth/callback/zitadel"' \
+    "the staging website app is created with the staging callback" -- \
+    --target staging --provision-bibleget-website
+
+expect_payload CreateApplication has '"accessTokenType": "OIDC_TOKEN_TYPE_JWT"' \
+    "the staging website app is created with JWT access tokens" -- \
+    --target staging --provision-bibleget-website
+
+# A staging run must look up the staging name only: the local app existing must
+# not make staging update it (it would replace its redirect URIs).
+existing_apps "BibleGet Website"
+expect 0 lacks "app-existing" \
+    "staging ignores the local-named app and creates its own" -- \
+    --target staging --provision-bibleget-website
+existing_apps "BibleGet Website (Staging)"
+expect 0 has "app-existing" \
+    "staging finds its existing app by the staging name" -- \
+    --target staging --provision-bibleget-website
+expect_payload UpdateApplication has '"https://staging.bibleget.io/api/auth/callback/zitadel"' \
+    "staging update sends the staging callback" -- \
+    --target staging --provision-bibleget-website
+expect_payload UpdateApplication has '"devMode": false' \
+    "staging update sends devMode=false" -- \
+    --target staging --provision-bibleget-website
+existing_apps
 
 expect 17 has "endpoint" \
     "provisioning BibleGet with cdcf-website's PAT refuses (#34 guard)" -- \

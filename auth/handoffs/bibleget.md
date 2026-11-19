@@ -13,7 +13,7 @@ Consumer repo: [`BibleGet-I-O/endpoint`](https://github.com/BibleGet-I-O/endpoin
 | Org | `BibleGet` (`--create-orgs`) |
 | Project | `BibleGet`, *Assert roles on authentication* on |
 | Roles | `bibleget_admin` — the endpoint's `/admin/*` routes |
-| Apps | `BibleGet Website` (Web, `client_secret_post`, JWT access tokens, role assertion), **local only** for now |
+| Apps | `BibleGet Website` (local) and `BibleGet Website (Staging)` (Web, `client_secret_post`, JWT access tokens, role assertion); none on production yet |
 
 No API app: the endpoint never calls introspection. It verifies the access
 token as an RS256 JWT against `$ZITADEL_ISSUER/oauth/v2/keys`, requires
@@ -56,7 +56,14 @@ users.
 
 ## Website app on staging / production
 
-Not provisioned yet: the site has no deployment. When it gets one, give the
-staging app its own name (staging and production share the instance, and a run
-replaces an existing app's redirect URIs), and add the origins in
+Staging: `./setup-zitadel.sh --target staging --provision-bibleget-website`
+creates (or updates) the app `BibleGet Website (Staging)` with redirect
+`https://staging.bibleget.io/api/auth/callback/zitadel`, post-logout
+`https://staging.bibleget.io`, devMode false and JWT access tokens. The client
+id and one-time secret go into the site's server environment
+(`AUTH_ZITADEL_ID`, `AUTH_ZITADEL_SECRET`); never paste them elsewhere.
+
+Production: not provisioned yet (the site has no production deployment). When it
+gets one, give it its own app name (staging and production share the instance,
+and a run replaces an existing app's redirect URIs) and add the origin in
 `setup-zitadel.sh` (`BIBLEGET_WEBSITE_URLS`).
