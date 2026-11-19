@@ -195,6 +195,7 @@ The Zitadel script prints handoff values per property at the end (issuer, org ID
 | `cdcf-website` | `http://localhost:8090` | `cdcf-website/.zitadel-data/automation-user.pat` |
 | `martyrology-api` | `http://localhost:8080` | `martyrology-api/.zitadel-data/automation-user.pat` |
 | `martyrology-frontend` | own stack | `martyrology-frontend/.zitadel-data/automation-user.pat` |
+| `endpoint` (BibleGet) | `http://localhost:8095` | `endpoint/.zitadel-data/automation-user.pat` |
 
 So use one env file per property, and name it after the property:
 
@@ -230,6 +231,7 @@ It is an **allow-list per action, not one property per action**, because a stack
 | `--provision-cdcf-website` | `cdcf-website` |
 | `--provision-martyrology` | `martyrology-api`, `martyrology-frontend` |
 | `--provision-martyrology-frontend` | `martyrology-frontend` |
+| `--provision-bibleget`, `--provision-bibleget-website` | `endpoint` (BibleGet-I-O/endpoint's compose profile `zitadel`) |
 
 `martyrology-frontend/scripts/setup-stack.sh` runs `--provision-martyrology` against its **own** instance — the frontend authenticates there, so the Martyrology Project and roles have to exist in it. Pinning that action to `martyrology-api` alone would refuse a correct run. What stays refused is the cross-**family** case, which is the one actually reported: Martyrology provisioned while the PAT points at cdcf-website.
 

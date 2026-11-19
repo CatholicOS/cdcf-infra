@@ -115,8 +115,15 @@ Actions:
                               Origin follows --target: localhost+devMode on local,
                               romanmartyrology.com on production. Skips on staging
                               (no Martyrology staging deployment yet).
+  --provision-bibleget        Provision BibleGet Project + bibleget_admin role (no app: the
+                              BibleGet endpoint verifies JWT access tokens against the JWKS,
+                              with the Project id as audience). Every target.
+  --provision-bibleget-website
+                              Provision the BibleGet Website OIDC app (Web/client_secret_post,
+                              JWT access tokens). Origin follows --target: localhost+devMode
+                              on local; skips on staging and production (no deployment yet).
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
-  --all                       Above eight in dependency order
+  --all                       Above ten in dependency order
 
 Environment variables (sourced from .env.\$target):
   ZITADEL_ISSUER                 (default: https://auth.catholicdigitalcommons.org)
@@ -176,8 +183,10 @@ while [[ $# -gt 0 ]]; do
         --provision-cdcf-website)    ACTIONS+=("provision-cdcf-website"); shift ;;
         --provision-martyrology)     ACTIONS+=("provision-martyrology"); shift ;;
         --provision-martyrology-frontend) ACTIONS+=("provision-martyrology-frontend"); shift ;;
+        --provision-bibleget)        ACTIONS+=("provision-bibleget"); shift ;;
+        --provision-bibleget-website) ACTIONS+=("provision-bibleget-website"); shift ;;
         --rename-bootstrap-admin)    ACTIONS+=("rename-bootstrap-admin"); shift ;;
-        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend" "provision-litcal-tests-ui" "provision-cdcf-website" "provision-martyrology" "provision-martyrology-frontend"); shift ;;
+        --all)                       ACTIONS+=("rename-bootstrap-admin" "create-orgs" "provision-litcal" "provision-litcal-frontend" "provision-litcal-tests-ui" "provision-cdcf-website" "provision-martyrology" "provision-martyrology-frontend" "provision-bibleget" "provision-bibleget-website"); shift ;;
         -h|--help)                   usage ;;
         *) echo "Unknown arg: $1" >&2; usage ;;
     esac
@@ -309,6 +318,12 @@ action_properties() {
         provision-cdcf-website)         echo "cdcf-website" ;;
         provision-martyrology)          echo "martyrology-api martyrology-frontend" ;;
         provision-martyrology-frontend) echo "martyrology-frontend" ;;
+        # BibleGet's local Zitadel lives in the endpoint repo's compose stack
+        # (BibleGet-I-O/endpoint, profile "zitadel"), so its PAT sits at
+        # endpoint/.zitadel-data/. The website authenticates against that same
+        # instance; when the website gets a stack of its own, add it here.
+        provision-bibleget)             echo "endpoint" ;;
+        provision-bibleget-website)     echo "endpoint" ;;
         *)                              echo "" ;;
     esac
 }
@@ -611,7 +626,10 @@ create_project() {
     elif echo "$upd" | jq -e '.code == "failed_precondition"' >/dev/null 2>&1; then
         ok "projectRoleAssertion already enabled"
     else
-        warn "Could not confirm projectRoleAssertion: $upd"
+        # Without it the tokens carry no roles claim, so a handoff now would
+        # only fail later at sign-in. The Project stays for a retry.
+        err "Could not enable projectRoleAssertion on Project $name ($existing): $upd"
+        exit 6
     fi
     echo "$existing"
 }
@@ -705,7 +723,11 @@ JSON
         elif echo "$upd" | jq -e '.code == "failed_precondition"' >/dev/null 2>&1; then
             ok "OIDC config unchanged"
         else
-            warn "Could not confirm OIDC config update: $upd"
+            # The app may still have its old redirect URIs or token type (an
+            # opaque access token fails a JWT-verifying API), so emitting its
+            # handoff would look like success. The app stays for a retry.
+            err "Could not update OIDC config of $name ($app_id): $upd"
+            exit 10
         fi
         # Client secret unrecoverable on the "exists" branch — emit empty.
         echo "$app_id|$client_id|"
@@ -1272,6 +1294,126 @@ do_provision_martyrology_frontend() {
     echo
 }
 
+# --- BibleGet provisioning ------------------------------------------------
+#
+# One Project, "BibleGet", in the BibleGet Org, with a single role:
+# bibleget_admin gates the endpoint's /admin routes. Developers need no role:
+# any signed-in user with a verified email may create projects there.
+#
+# No API app. The endpoint never calls introspection: it verifies the access
+# token as an RS256 JWT against $ZITADEL_ISSUER/oauth/v2/keys and requires the
+# Project id in `aud` (ZITADEL_AUDIENCE). So the tokens must be JWTs, which is
+# the Website app's accessTokenType below, and carry the roles claim, which
+# create_project's projectRoleAssertion plus the app's accessTokenRoleAssertion
+# provide.
+#
+# Production and staging share one Zitadel instance, so they share this
+# Project too: the dev endpoint (query.bibleget.io/dev) and the v4 production
+# endpoint take the same ZITADEL_AUDIENCE.
+BIBLEGET_ORG_NAME="BibleGet"
+BIBLEGET_PROJECT_NAME="BibleGet"
+BIBLEGET_ROLES=("bibleget_admin:BibleGet Administrator")
+
+# The Next.js website (developer pages, reader). Auth.js v5, confidential
+# client (client_secret_post), callback /api/auth/callback/zitadel like the
+# Martyrology frontend. Only a local origin exists today: the site has no
+# staging or production deployment yet. When one appears, give staging its own
+# app NAME — staging and production share an instance, and create_oidc_web_app
+# replaces an existing app's redirect URIs.
+BIBLEGET_WEBSITE_APP_NAME="BibleGet Website"
+BIBLEGET_WEBSITE_CALLBACK_PATH="/api/auth/callback/zitadel"
+case "$TARGET" in
+    local)
+        BIBLEGET_WEBSITE_URLS=("http://localhost:3000")
+        BIBLEGET_WEBSITE_DEV_MODE="true"
+        ;;
+    *)
+        BIBLEGET_WEBSITE_URLS=()
+        BIBLEGET_WEBSITE_DEV_MODE="false"
+        ;;
+esac
+
+do_provision_bibleget() {
+    log "Provisioning BibleGet"
+    local org_id
+    org_id=$(find_org_id "$BIBLEGET_ORG_NAME")
+    if [[ -z "$org_id" ]]; then
+        err "$BIBLEGET_ORG_NAME Org not found. Run --create-orgs (or --create-org $BIBLEGET_ORG_NAME) first."
+        exit 18
+    fi
+    ok "Found $BIBLEGET_ORG_NAME Org: $org_id"
+
+    local project_id
+    project_id=$(create_project "$org_id" "$BIBLEGET_PROJECT_NAME")
+
+    create_roles "$project_id" "${BIBLEGET_ROLES[@]}"
+
+    echo
+    echo "${B}=== BibleGet handoff values ===${N}"
+    echo "ZITADEL_ORG_ID=$org_id"
+    echo "ZITADEL_PROJECT_ID=$project_id"
+    echo
+    echo "${B}--- for the BibleGet endpoint's .env.<environment> ---${N}"
+    echo "ZITADEL_ISSUER=$ZITADEL_ISSUER"
+    echo "ZITADEL_AUDIENCE=$project_id   # ← the Project id"
+    echo "# Grant bibleget_admin to the admins: $BIBLEGET_ORG_NAME Org → Projects →"
+    echo "#   $BIBLEGET_PROJECT_NAME → Authorizations. See handoffs/bibleget.md."
+    echo
+}
+
+do_provision_bibleget_website() {
+    log "Provisioning BibleGet Website OIDC app ($TARGET)"
+    no_origins_for_target "${#BIBLEGET_WEBSITE_URLS[@]}" "$TARGET" \
+        "The BibleGet website has no $TARGET deployment yet. Use --target local" \
+        "(localhost, against the endpoint repo's local Zitadel)." && return 0
+    local org_id
+    org_id=$(find_org_id "$BIBLEGET_ORG_NAME")
+    if [[ -z "$org_id" ]]; then
+        err "$BIBLEGET_ORG_NAME Org not found. Run --create-orgs (or --create-org $BIBLEGET_ORG_NAME) first."
+        exit 18
+    fi
+    local project_id
+    project_id=$(find_project_id "$org_id" "$BIBLEGET_PROJECT_NAME")
+    if [[ -z "$project_id" ]]; then
+        err "Project $BIBLEGET_PROJECT_NAME not found. Run --provision-bibleget first."
+        exit 19
+    fi
+    ok "Found $BIBLEGET_PROJECT_NAME Project: $project_id"
+
+    local redirect_uris_json post_logout_uris_json
+    redirect_uris_json=$(printf '%s\n' "${BIBLEGET_WEBSITE_URLS[@]}" \
+        | jq -R --arg cb "$BIBLEGET_WEBSITE_CALLBACK_PATH" '. + $cb' | jq -s '.')
+    post_logout_uris_json=$(printf '%s\n' "${BIBLEGET_WEBSITE_URLS[@]}" | jq -R '.' | jq -s '.')
+
+    local app_info app_id client_id client_secret
+    app_info=$(create_oidc_web_app "$project_id" "$BIBLEGET_WEBSITE_APP_NAME" \
+        "$redirect_uris_json" "$post_logout_uris_json" \
+        "OIDC_AUTH_METHOD_TYPE_POST" "$BIBLEGET_WEBSITE_DEV_MODE")
+    IFS='|' read -r app_id client_id client_secret <<<"$app_info"
+
+    echo
+    echo "${B}=== BibleGet Website handoff values — $TARGET ===${N}"
+    echo "AUTH_ZITADEL_ISSUER=$ZITADEL_ISSUER"
+    echo "ZITADEL_PROJECT_ID=$project_id"
+    echo "ZITADEL_APP_ID=$app_id"
+    echo "AUTH_ZITADEL_ID=$client_id          # ← client_id"
+    if [[ -n "$client_secret" ]]; then
+        echo "AUTH_ZITADEL_SECRET=$client_secret   # ← client_secret (one-time emit)"
+        warn "The client secret above is printed ONCE and is UNRECOVERABLE."
+    else
+        warn "Client secret not emitted (app already existed; ListApplications"
+        warn "  does not return secrets). Rotate via the Zitadel console:"
+        warn "  $BIBLEGET_ORG_NAME Org → Projects → $BIBLEGET_PROJECT_NAME →"
+        warn "  Apps → $BIBLEGET_WEBSITE_APP_NAME → Regenerate Client Secret"
+    fi
+    echo "# Access tokens are JWTs whose aud already carries the Project id (the"
+    echo "# endpoint's ZITADEL_AUDIENCE); no extra :aud scope is needed."
+    echo "# Registered redirect URIs:"
+    for url in "${BIBLEGET_WEBSITE_URLS[@]}"; do echo "#   $url$BIBLEGET_WEBSITE_CALLBACK_PATH"; done
+    echo "# devMode=$BIBLEGET_WEBSITE_DEV_MODE"
+    echo
+}
+
 # --- main -----------------------------------------------------------------
 
 log "Target: $TARGET (issuer: $ZITADEL_ISSUER, internal: $ZITADEL_INTERNAL_URL)"
@@ -1297,6 +1439,8 @@ for action in "${ACTIONS[@]}"; do
         provision-cdcf-website)     do_provision_cdcf_website ;;
         provision-martyrology)      do_provision_martyrology ;;
         provision-martyrology-frontend) do_provision_martyrology_frontend ;;
+        provision-bibleget)         do_provision_bibleget ;;
+        provision-bibleget-website) do_provision_bibleget_website ;;
     esac
 done
 
