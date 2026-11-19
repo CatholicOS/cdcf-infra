@@ -121,11 +121,20 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 ORGS = ["CDCF", "LiturgicalCalendar", "BibleGet", "OntoKit", "Martyrology"]
 LOG = os.environ.get("STUB_LOG", "")
 EXISTING_FILE = os.environ.get("STUB_EXISTING", "")
+FAILING_FILE = os.environ.get("STUB_FAILING", "")
 
 
 def existing_apps():
     try:
         with open(EXISTING_FILE) as fh:
+            return [l.strip() for l in fh if l.strip()]
+    except OSError:
+        return []
+
+
+def failing_rpcs():
+    try:
+        with open(FAILING_FILE) as fh:
             return [l.strip() for l in fh if l.strip()]
     except OSError:
         return []
@@ -150,6 +159,8 @@ class H(BaseHTTPRequestHandler):
         if LOG:
             with open(LOG, "a") as fh:
                 fh.write(json.dumps({"path": p, "body": raw}) + "\n")
+        if p.rsplit("/", 1)[-1] in failing_rpcs():
+            return self._send(500, {"code": "internal", "message": "stub failure"})
         if p.endswith("/ListOrganizations"):
             return self._send(200, {"result": [
                 {"id": f"org-{i}", "name": name} for i, name in enumerate(ORGS)]})
@@ -210,9 +221,11 @@ PYEOF
 REQ_LOG="$SANDBOX/requests.jsonl"
 EXISTING_FILE="$SANDBOX/existing_apps"
 : > "$EXISTING_FILE"
+FAILING_FILE="$SANDBOX/failing_rpcs"
+: > "$FAILING_FILE"
 
 start_stub() {
-    STUB_LOG="$REQ_LOG" STUB_EXISTING="$EXISTING_FILE" \
+    STUB_LOG="$REQ_LOG" STUB_EXISTING="$EXISTING_FILE" STUB_FAILING="$FAILING_FILE" \
         python3 "$SANDBOX/stub.py" "$PORT" >"$SANDBOX/stub.log" 2>&1 &
     STUB_PID=$!
     local i
@@ -326,6 +339,13 @@ existing_apps() {
     : > "$EXISTING_FILE"
     local n
     for n in "$@"; do echo "$n" >> "$EXISTING_FILE"; done
+}
+
+# failing_rpcs NAME... — the RPCs (e.g. UpdateProject) the stub answers with a 500.
+failing_rpcs() {
+    : > "$FAILING_FILE"
+    local n
+    for n in "$@"; do echo "$n" >> "$FAILING_FILE"; done
 }
 
 start_stub || { echo "${R}[selftest] stub failed to start on port $PORT${N}" >&2; exit 1; }
@@ -475,6 +495,24 @@ expect 0 has "BibleGet Website handoff values" \
     "the endpoint repo's setup script invocation provisions normally" -- \
     ENV_FILE=.env.local.endpoint --target local \
     --create-org BibleGet --provision-bibleget --provision-bibleget-website
+
+# A failed update must stop the run before the handoff: the endpoint needs the
+# roles claim (projectRoleAssertion) and verifies only JWT access tokens, so
+# handing off values for a Project or app left in its old state would look like
+# success and fail at sign-in. The existing Project/app is kept for a retry.
+failing_rpcs UpdateProject
+expect 6 lacks "ZITADEL_AUDIENCE=" \
+    "a failed UpdateProject (role assertion) stops before the BibleGet handoff" -- \
+    --target production --provision-bibleget
+failing_rpcs
+
+existing_apps "BibleGet Website"
+failing_rpcs UpdateApplication
+expect 10 lacks "AUTH_ZITADEL_ID=" \
+    "a failed UpdateApplication on an existing website app stops before the handoff" -- \
+    ENV_FILE=.env.local.endpoint --target local --provision-bibleget-website
+failing_rpcs
+existing_apps
 
 echo "${B}[selftest]${N} --- the skip contract: exit 0, so --all sweeps past ---"
 

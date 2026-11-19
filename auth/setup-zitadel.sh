@@ -626,7 +626,10 @@ create_project() {
     elif echo "$upd" | jq -e '.code == "failed_precondition"' >/dev/null 2>&1; then
         ok "projectRoleAssertion already enabled"
     else
-        warn "Could not confirm projectRoleAssertion: $upd"
+        # Without it the tokens carry no roles claim, so a handoff now would
+        # only fail later at sign-in. The Project stays for a retry.
+        err "Could not enable projectRoleAssertion on Project $name ($existing): $upd"
+        exit 6
     fi
     echo "$existing"
 }
@@ -720,7 +723,11 @@ JSON
         elif echo "$upd" | jq -e '.code == "failed_precondition"' >/dev/null 2>&1; then
             ok "OIDC config unchanged"
         else
-            warn "Could not confirm OIDC config update: $upd"
+            # The app may still have its old redirect URIs or token type (an
+            # opaque access token fails a JWT-verifying API), so emitting its
+            # handoff would look like success. The app stays for a retry.
+            err "Could not update OIDC config of $name ($app_id): $upd"
+            exit 10
         fi
         # Client secret unrecoverable on the "exists" branch — emit empty.
         echo "$app_id|$client_id|"
