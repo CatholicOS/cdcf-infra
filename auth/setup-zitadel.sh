@@ -125,7 +125,8 @@ Actions:
   --provision-bibleget-website
                               Provision the BibleGet Website OIDC app (Web/client_secret_post,
                               JWT access tokens). Origin follows --target: localhost+devMode
-                              on local; skips on staging and production (no deployment yet).
+                              on local; "BibleGet Website (Staging)" at staging.bibleget.io on staging;
+                              skips on production (no deployment yet).
   --rename-bootstrap-admin    Rename IAM admin user to \$ZITADEL_ADMIN_EMAIL
   --assign-role PROJECT ROLE LOGIN
                               Give the user with login name LOGIN the role ROLE on the
@@ -1331,18 +1332,24 @@ BIBLEGET_ROLES=("bibleget_admin:BibleGet Administrator")
 
 # The Next.js website (developer pages, reader). Auth.js v5, confidential
 # client (client_secret_post), callback /api/auth/callback/zitadel like the
-# Martyrology frontend. Only a local origin exists today: the site has no
-# staging or production deployment yet. When one appears, give staging its own
-# app NAME — staging and production share an instance, and create_oidc_web_app
-# replaces an existing app's redirect URIs.
-BIBLEGET_WEBSITE_APP_NAME="BibleGet Website"
+# Martyrology frontend. Local and staging exist; production has no deployment
+# yet. Staging and production share an instance, and create_oidc_web_app
+# replaces an existing app's redirect URIs, so each target has its own app NAME
+# (the lookup is by name, so a staging run never touches another target's app).
 BIBLEGET_WEBSITE_CALLBACK_PATH="/api/auth/callback/zitadel"
 case "$TARGET" in
     local)
+        BIBLEGET_WEBSITE_APP_NAME="BibleGet Website"
         BIBLEGET_WEBSITE_URLS=("http://localhost:3000")
         BIBLEGET_WEBSITE_DEV_MODE="true"
         ;;
+    staging)
+        BIBLEGET_WEBSITE_APP_NAME="BibleGet Website (Staging)"
+        BIBLEGET_WEBSITE_URLS=("https://staging.bibleget.io")
+        BIBLEGET_WEBSITE_DEV_MODE="false"
+        ;;
     *)
+        BIBLEGET_WEBSITE_APP_NAME="BibleGet Website"
         BIBLEGET_WEBSITE_URLS=()
         BIBLEGET_WEBSITE_DEV_MODE="false"
         ;;
@@ -1379,8 +1386,8 @@ do_provision_bibleget() {
 do_provision_bibleget_website() {
     log "Provisioning BibleGet Website OIDC app ($TARGET)"
     no_origins_for_target "${#BIBLEGET_WEBSITE_URLS[@]}" "$TARGET" \
-        "The BibleGet website has no $TARGET deployment yet. Use --target local" \
-        "(localhost, against the endpoint repo's local Zitadel)." && return 0
+        "The BibleGet website has no $TARGET deployment yet. Use --target staging" \
+        "or --target local (localhost, against the endpoint repo's local Zitadel)." && return 0
     local org_id
     org_id=$(find_org_id "$BIBLEGET_ORG_NAME")
     if [[ -z "$org_id" ]]; then
