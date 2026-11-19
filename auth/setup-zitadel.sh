@@ -1312,9 +1312,11 @@ do_provision_martyrology_frontend() {
 
 # --- BibleGet provisioning ------------------------------------------------
 #
-# One Project, "BibleGet", in the BibleGet Org, with a single role:
-# bibleget_admin gates the endpoint's /admin routes. Developers need no role:
-# any signed-in user with a verified email may create projects there.
+# One Project, "BibleGet", in the BibleGet Org, with two roles:
+# bibleget_admin gates the endpoint's /admin routes, and bibleget_reviewer its
+# /review routes (reviewing the links from editions' verses to CBTUDR units).
+# Developers need no role: any signed-in user with a verified email may create
+# projects there.
 #
 # No API app. The endpoint never calls introspection: it verifies the access
 # token as an RS256 JWT against $ZITADEL_ISSUER/oauth/v2/keys and requires the
@@ -1328,7 +1330,7 @@ do_provision_martyrology_frontend() {
 # endpoint take the same ZITADEL_AUDIENCE.
 BIBLEGET_ORG_NAME="BibleGet"
 BIBLEGET_PROJECT_NAME="BibleGet"
-BIBLEGET_ROLES=("bibleget_admin:BibleGet Administrator")
+BIBLEGET_ROLES=("bibleget_admin:BibleGet Administrator" "bibleget_reviewer:BibleGet Reviewer")
 
 # The Next.js website (developer pages, reader). Auth.js v5, confidential
 # client (client_secret_post), callback /api/auth/callback/zitadel like the

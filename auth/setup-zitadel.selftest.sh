@@ -512,6 +512,10 @@ expect 0 has "bibleget_admin" \
     "the bibleget_admin role is created" -- \
     --target staging --provision-bibleget
 
+expect 0 has "bibleget_reviewer" \
+    "the bibleget_reviewer role is created" -- \
+    --target staging --provision-bibleget
+
 expect 0 has "http://localhost:3000/api/auth/callback/zitadel" \
     "local registers the website's localhost origin" -- \
     ENV_FILE=.env.local.endpoint --target local --provision-bibleget-website
