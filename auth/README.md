@@ -237,7 +237,7 @@ It is an **allow-list per action, not one property per action**, because a stack
 
 Three more details worth knowing:
 
-- **Instance-wide actions are exempt.** `--create-orgs`, `--create-org` and `--rename-bootstrap-admin` act on the instance rather than a property, and `--create-orgs` is a prerequisite for provisioning a fresh local stack at all, so none of them are guarded.
+- **Instance-wide actions are exempt.** `--create-orgs`, `--create-org`, `--rename-bootstrap-admin` and `--assign-role` act on the instance rather than a property (`--assign-role` names its Project, and stops with exit 20 on an instance that has none by that name), and `--create-orgs` is a prerequisite for provisioning a fresh local stack at all, so none of them are guarded.
 - **LitCal skips on local, it does not refuse.** There is no LitCal local stack here — `--provision-litcal`, `--provision-litcal-frontend` and `--provision-litcal-tests-ui` all warn and exit 0, naming `LiturgicalCalendarAPI/scripts/setup-zitadel.sh`, which is what provisions LitCal locally. That keeps `--target local --all` sweeping, per the skip contract in `--help`.
 - **`--target local --all` is refused**, because a sweep spans properties and no single PAT can be right for all of them. Provision one property at a time on local.
 

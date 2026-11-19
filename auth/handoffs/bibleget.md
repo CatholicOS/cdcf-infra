@@ -43,8 +43,16 @@ A user token from the website app (scopes `openid email profile`):
 
 ## Grant an admin
 
-Zitadel console → `BibleGet` Org → Projects → `BibleGet` → Authorizations →
-New → the user → `bibleget_admin`.
+```
+./setup-zitadel.sh --target production --assign-role BibleGet bibleget_admin <login name>
+```
+
+The user may belong to any Org (the instance admin lives in `ZITADEL`): the
+role is assigned in the `BibleGet` Org, which owns the Project, and needs no
+project grant. A rerun changes nothing. Sign in again afterwards, since older
+tokens lack the role. In the console this is the Project's Role Assignments
+(formerly Authorizations), but its user search lists only the current Org's
+users.
 
 ## Website app on staging / production
 
